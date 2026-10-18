@@ -1,4 +1,3 @@
-mkdir -p ~/.local/bin && cat > ~/.local/bin/crew <<'CREWEOF'
 #!/usr/bin/env bash
 # crew — spin up a team of AI coding agents (Claude Code, Codex, Gemini...) in herdr,
 # each with its own role, git worktree and a shared message board.
@@ -198,4 +197,417 @@ kickoff() {  # kickoff <role> [revive]
   local r="$1" msg
   msg="You are the $r agent in a multi-agent crew. Read $CREW/PROTOCOL.md and $CREW/roles/$r.md now and follow them, then read $CREW/board.md and $CREW/tasks.md."
   [ "${2:-}" = revive ] && msg="$msg You were restarted: also read $CREW/notes/$r.md for your own handoff and continue from there."
-  [ "$r" = lead ] && [ "${2:-}" != revive ] && msg="$msg Then briefly greet
+  [ "$r" = lead ] && [ "${2:-}" != revive ] && msg="$msg Then briefly greet the human and ask what the crew should work on."
+  printf '%s' "$msg"
+}
+
+# args passed to the agent executable (after herdr's --), one per line
+agent_args() {
+  local agent="$1" kick="$2"
+  case "$agent" in
+    claude)        printf '%s\n' --add-dir "$CREW" "$kick" ;;
+    codex)         printf '%s\n' --add-dir "$CREW" "$kick" ;;
+    gemini)        printf '%s\n' --include-directories "$CREW" -i "$kick" ;;
+    *)             printf '%s\n' "$kick" ;;
+  esac
+}
+
+# ---------------------------------------------------------------- herdr helpers
+herdr_up() { herdr workspace list >/dev/null 2>&1; }
+
+ensure_server() {
+  herdr_up && return 0
+  say_info "starting herdr server in the background"
+  mkdir -p "$STATE"
+  nohup herdr server >"$STATE/herdr-server.log" 2>&1 &
+  local i=0
+  while [ $i -lt 40 ]; do herdr_up && return 0; sleep 0.25; i=$((i+1)); done
+  die "herdr server did not come up (see $STATE/herdr-server.log)"
+}
+
+ws_alive()   { local ws; ws="$(state_get ws)"; [ -n "$ws" ] && herdr workspace get "$ws" >/dev/null 2>&1; }
+pane_alive() { [ -n "$1" ] && herdr pane get "$1" >/dev/null 2>&1; }
+agent_alive(){ herdr agent get "$(agent_name "$1")" >/dev/null 2>&1; }
+
+launch_agent() {  # launch_agent <role> <pane_id> [revive]
+  local r="$1" pane="$2" agent kick out rc i
+  agent="$(role_agent "$r")"; kick="$(kickoff "$r" "${3:-}")"
+  have "$agent" || { warn "$r: '$agent' is not installed — pane left as a shell"; return 1; }
+
+  local args=() line
+  while IFS= read -r line; do args+=("$line"); done <<EOF
+$(agent_args "$agent" "$kick")
+EOF
+
+  if case "$HERDR_KINDS" in *" $agent "*) true;; *) false;; esac; then
+    i=0
+    while :; do
+      out="$(herdr agent start "$(agent_name "$r")" --kind "$agent" --pane "$pane" --timeout 25000 -- "${args[@]}" 2>&1)"; rc=$?
+      [ $rc -eq 0 ] && { say_ok "$r → $agent ready"; return 0; }
+      case "$out" in
+        *agent_not_ready*) say_ok "$r → $agent started (waiting for you to approve a prompt in its pane)"; return 0 ;;
+        *timeout*)         say_ok "$r → $agent started (busy with its kickoff)"; return 0 ;;
+      esac
+      i=$((i+1)); [ $i -ge 4 ] && break; sleep 1   # shell may not be ready yet
+    done
+    warn "$r: herdr agent start failed: $(printf '%s' "$out" | head -c 300)"
+    return 1
+  fi
+  # agent kinds herdr doesn't know: just type the command into the pane
+  local cmd="$agent" a; for a in "${args[@]}"; do cmd="$cmd $(printf '%q' "$a")"; done
+  herdr pane run "$pane" "$cmd" >/dev/null 2>&1 && say_ok "$r → $agent launched" || warn "$r: could not launch $agent"
+}
+
+ensure_worktree() {
+  local r="$1" path br base
+  [ "$(role_wt "$r")" = yes ] || return 0
+  path="$(role_cwd "$r")"; br="crew/$r"; base="$(base_branch)"
+  [ -d "$path" ] && git -C "$path" rev-parse --git-dir >/dev/null 2>&1 && return 0
+  mkdir -p "$(dirname "$path")"
+  git -C "$ROOT" worktree prune >/dev/null 2>&1
+  if git -C "$ROOT" show-ref --verify --quiet "refs/heads/$br"; then
+    git -C "$ROOT" worktree add -q "$path" "$br" || die "could not create worktree for $r"
+  else
+    git -C "$ROOT" worktree add -q -b "$br" "$path" "$base" || die "could not create worktree for $r"
+  fi
+  say_ok "worktree $br → $path"
+}
+
+new_pane_for() {  # new_pane_for <role> <split-from-pane> <direction>
+  local r="$1" from="$2" dir="$3" out
+  out="$(herdr pane split "$from" --direction "$dir" --cwd "$(role_cwd "$r")" \
+        --env "CREW_DIR=$CREW" --env "CREW_ROLE=$r" --no-focus 2>&1)" || { warn "split failed: $out"; return 1; }
+  printf '%s' "$out" | json_get '.result.pane.pane_id'
+}
+
+# ---------------------------------------------------------------- commands
+cmd_setup() {
+  load_ctx
+  git -C "$ROOT" rev-parse --verify -q HEAD >/dev/null || die "this repo has no commits yet — make one first"
+  if [ -f "$CREW/crew.conf" ]; then say_info "crew already set up in $CREW"; write_protocol; return 0; fi
+  mkdir -p "$CREW/roles" "$CREW/notes" "$STATE"
+  git -C "$ROOT" symbolic-ref --short HEAD > "$CREW/base" 2>/dev/null || git -C "$ROOT" rev-parse --short HEAD > "$CREW/base"
+
+  if [ -f "$CREW_HOME/crew.conf" ]; then
+    cp "$CREW_HOME/crew.conf" "$CREW/crew.conf"; say_info "using your default roster from $CREW_HOME/crew.conf"
+  else
+    local avail="" a; for a in claude codex gemini; do have "$a" && avail="$avail $a"; done
+    [ -n "$avail" ] || warn "none of claude / codex / gemini found on PATH — edit .crew/crew.conf"
+    pick() { local p; for p in "$@"; do case " $avail " in *" $p "*) echo "$p"; return;; esac; done; echo "$1"; }
+    {
+      echo "# crew roster: <role> <agent> <worktree yes|no>"
+      echo "# agents: claude codex gemini (or any herdr agent kind). Change with: crew role set <role> agent=<x>"
+      printf 'lead     %s no\n'  "$(pick claude codex gemini)"
+      printf 'builder  %s yes\n' "$(pick codex claude gemini)"
+      printf 'reviewer %s yes\n' "$(pick gemini claude codex)"
+    } > "$CREW/crew.conf"
+  fi
+  local r; for r in $(roles); do [ -f "$CREW/roles/$r.md" ] || template_for "$r" > "$CREW/roles/$r.md"; done
+  [ -f "$CREW/board.md" ] || printf '# Crew board\n\n' > "$CREW/board.md"
+  [ -f "$CREW/tasks.md" ] || printf '# Tasks\n\n| task | owner | status | notes |\n|------|-------|--------|-------|\n' > "$CREW/tasks.md"
+  write_protocol
+
+  local ex; ex="$(cd "$ROOT" && git rev-parse --git-path info/exclude)"
+  case "$ex" in /*) ;; *) ex="$ROOT/$ex" ;; esac
+  mkdir -p "$(dirname "$ex")"; grep -qxF '.crew/' "$ex" 2>/dev/null || echo '.crew/' >> "$ex"
+
+  say_ok "crew set up in $CREW"
+  printf '\n'; cmd_role_list
+  printf '\n%sNext:%s crew start      %s(customise first with: crew role edit <role>, crew role add ...)%s\n' "$B" "$N" "$D" "$N"
+}
+
+cmd_start() {
+  local attach=yes; [ "${1:-}" = --no-attach ] && attach=no
+  load_ctx
+  have herdr || die "herdr not found — install with: brew install herdr"
+  [ -f "$CREW/crew.conf" ] || cmd_setup >/dev/null
+  write_protocol
+  ensure_server
+
+  local r first="" ws pane out
+  for r in $(roles); do ensure_worktree "$r"; done
+
+  if ws_alive; then
+    say_info "crew workspace exists — reviving anything that stopped"
+    ws="$(state_get ws)"
+    local anchor=""
+    for r in $(roles); do pane="$(state_get "pane:$r")"; pane_alive "$pane" && { anchor="$pane"; break; }; done
+    for r in $(roles); do
+      if agent_alive "$r"; then say_ok "$r is running"; continue; fi
+      pane="$(state_get "pane:$r")"
+      if ! pane_alive "$pane"; then
+        if [ -z "$anchor" ]; then
+          out="$(herdr tab create --workspace "$ws" --cwd "$(role_cwd "$r")" --label agents --env "CREW_DIR=$CREW" --env "CREW_ROLE=$r" --no-focus 2>&1)"
+          pane="$(printf '%s' "$out" | json_get '.result.root_pane.pane_id')"
+        else
+          pane="$(new_pane_for "$r" "$anchor" down)"
+        fi
+        [ -n "$pane" ] || { warn "could not create a pane for $r"; continue; }
+        state_set "pane:$r" "$pane"; anchor="${anchor:-$pane}"; sleep 0.5
+      fi
+      launch_agent "$r" "$pane" revive
+    done
+  else
+    local rs; rs="$(roles)"; first="$(printf '%s\n' "$rs" | head -1)"
+    [ -n "$first" ] || die "no roles in $CREW/crew.conf"
+    rm -f "$STATE/session"
+    out="$(herdr workspace create --cwd "$(role_cwd "$first")" --label "crew:$SLUG" \
+          --env "CREW_DIR=$CREW" --env "CREW_ROLE=$first" --no-focus 2>&1)" || die "could not create workspace: $out"
+    ws="$(printf '%s' "$out" | json_get '.result.workspace.workspace_id')"
+    pane="$(printf '%s' "$out" | json_get '.result.root_pane.pane_id')"
+    [ -n "$ws" ] && [ -n "$pane" ] || die "unexpected herdr response: $out"
+    herdr tab rename "$(printf '%s' "$out" | json_get '.result.tab.tab_id')" agents >/dev/null 2>&1
+    state_set ws "$ws"; state_set "pane:$first" "$pane"
+    say_ok "herdr workspace crew:$SLUG ($ws)"
+
+    # layout: first role on the left, the rest stacked on the right
+    local right="" i=0
+    for r in $(printf '%s\n' "$rs" | tail -n +2); do
+      if [ -z "$right" ]; then right="$(new_pane_for "$r" "$pane" right)"; p="$right"
+      else p="$(new_pane_for "$r" "$right" down)"; right="$p"; fi
+      [ -n "$p" ] && state_set "pane:$r" "$p"
+    done
+    # board tab: live view of the conversation
+    out="$(herdr tab create --workspace "$ws" --cwd "$CREW" --label board --no-focus 2>&1)"
+    local bp; bp="$(printf '%s' "$out" | json_get '.result.root_pane.pane_id')"
+    [ -n "$bp" ] && { state_set board "$bp"; sleep 0.5; herdr pane run "$bp" "tail -n 40 -F board.md" >/dev/null 2>&1; }
+
+    sleep 0.5
+    for r in $rs; do
+      p="$(state_get "pane:$r")"; [ -n "$p" ] && launch_agent "$r" "$p"
+    done
+    post_board "crew" "all" "Crew started: $(printf '%s ' $rs)"
+  fi
+
+  ws="$(state_get ws)"
+  printf '\n%sCrew is up.%s Talk to the lead in its pane, or from anywhere: %screw say lead "..."%s\n' "$B" "$N" "$B" "$N"
+  if [ "$attach" = yes ] && [ -t 1 ]; then
+    herdr workspace focus "$ws" >/dev/null 2>&1
+    if [ "${HERDR_ENV:-}" = 1 ]; then say_info "already inside herdr — switched to crew:$SLUG"
+    else exec herdr; fi
+  fi
+}
+
+post_board() {  # post_board <from> <to> <message>
+  printf '### %s  %s → %s\n%s\n\n' "$(date '+%Y-%m-%d %H:%M')" "$1" "$2" "$3" >> "$CREW/board.md"
+}
+
+nudge() {  # nudge <role> <text>
+  local r="$1" text="$2" name pane
+  name="$(agent_name "$r")"
+  herdr agent prompt "$name" "$text" >/dev/null 2>&1 && return 0
+  pane="$(state_get "pane:$r")"
+  [ -n "$pane" ] && herdr agent prompt "$pane" "$text" >/dev/null 2>&1 && return 0
+  return 1
+}
+
+cmd_say() {
+  load_ctx; need_setup
+  [ $# -ge 2 ] || die 'usage: crew say <role|all|human> "message"'
+  local to="$1"; shift; local msg="$*" from="${CREW_ROLE:-human}"
+  [ "$to" = all ] || [ "$to" = human ] || role_exists "$to" || die "no role '$to' (roles: $(roles | tr '\n' ' '))"
+  post_board "$from" "$to" "$msg"
+  [ "$to" = human ] && { say_ok "posted for the human"; return 0; }
+
+  local short="$msg"; [ ${#short} -gt 600 ] && short="$(printf '%s' "$msg" | cut -c1-600)… (full message in $CREW/board.md)"
+  local text="[crew] from $from: $short  (reply with: crew say $from \"...\")"
+  [ "$from" = human ] && text="[crew] from the human: $short"
+  local targets r ok=0 fail=""
+  if [ "$to" = all ]; then targets="$(roles | grep -vx "$from")"; else targets="$to"; fi
+  herdr_up || { say_ok "posted to board (herdr not running, no nudge)"; return 0; }
+  for r in $targets; do
+    if nudge "$r" "$text"; then ok=$((ok+1)); else fail="$fail $r"; fi
+  done
+  say_ok "posted to board, delivered to $ok agent(s)"
+  [ -n "$fail" ] && warn "not delivered live to:$fail (busy on a prompt or not running) — it's on the board"
+  return 0
+}
+
+cmd_board() { load_ctx; need_setup; tail -n "${1:-40}" "$CREW/board.md"; }
+
+cmd_tasks() { load_ctx; need_setup; cat "$CREW/tasks.md"; }
+
+cmd_status() {
+  load_ctx; need_setup
+  printf '%s%-10s %-8s %-10s %s%s\n' "$B" ROLE AGENT STATUS "WORKS IN" "$N"
+  local r st
+  for r in $(roles); do
+    st="-"
+    if herdr_up; then st="$(herdr agent get "$(agent_name "$r")" 2>/dev/null | json_get '.result.agent.agent_status')"; [ -n "$st" ] || st=stopped; fi
+    printf '%-10s %-8s %-10s %s\n' "$r" "$(role_agent "$r")" "$st" "$(role_cwd "$r")"
+  done
+  herdr_up && ws_alive && printf '\n%sworkspace %s%s\n' "$D" "$(state_get ws)" "$N"
+}
+
+cmd_restart() {
+  load_ctx; need_setup
+  [ $# -ge 1 ] || die "usage: crew restart <role|all>"
+  local list r p
+  if [ "$1" = all ]; then list="$(roles)"; else role_exists "$1" || die "no role '$1'"; list="$1"; fi
+  for r in $list; do
+    p="$(state_get "pane:$r")"; [ -n "$p" ] && herdr pane close "$p" >/dev/null 2>&1
+    state_set "pane:$r" ""
+  done
+  cmd_start --no-attach
+}
+
+cmd_stop() {
+  load_ctx; need_setup
+  local ws; ws="$(state_get ws)"
+  if [ -n "$ws" ] && herdr_up; then herdr workspace close "$ws" >/dev/null 2>&1 && say_ok "closed herdr workspace $ws"; fi
+  rm -f "$STATE/session"
+  say_info "board, tasks, notes and worktrees are kept — crew start brings everyone back"
+}
+
+cmd_teardown() {
+  load_ctx; need_setup
+  printf 'Stop the crew and remove its worktrees (branches crew/* are kept)? [y/N] '; read -r a
+  case "$a" in y|Y|yes) ;; *) echo cancelled; return 1;; esac
+  cmd_stop
+  local r p
+  for r in $(roles); do
+    [ "$(role_wt "$r")" = yes ] || continue; p="$(role_cwd "$r")"; [ -d "$p" ] || continue
+    if git -C "$ROOT" worktree remove "$p" 2>/dev/null; then say_ok "removed worktree $p"
+    else warn "kept $p — it has uncommitted changes (commit them or: git worktree remove --force $p)"; fi
+  done
+}
+
+# ---------------------------------------------------------------- roles
+cmd_role_list() {
+  printf '%s%-10s %-8s %-9s %s%s\n' "$B" ROLE AGENT WORKTREE "ROLE FILE" "$N"
+  local r
+  for r in $(roles); do printf '%-10s %-8s %-9s %s\n' "$r" "$(role_agent "$r")" "$(role_wt "$r")" ".crew/roles/$r.md"; done
+}
+
+cmd_role() {
+  load_ctx; need_setup
+  local sub="${1:-list}"; shift 2>/dev/null
+  case "$sub" in
+  list|ls) cmd_role_list ;;
+
+  add)
+    local r="${1:-}"; shift 2>/dev/null
+    valid_role "$r" || die "usage: crew role add <name> [--agent claude|codex|gemini] [--no-worktree] [--like <role>]  (name: a-z0-9-, max 15)"
+    role_exists "$r" && die "role '$r' already exists"
+    local agent="" wt=yes like=""
+    while [ $# -gt 0 ]; do case "$1" in
+      --agent) agent="$2"; shift 2;; --agent=*) agent="${1#*=}"; shift;;
+      --no-worktree) wt=no; shift;; --worktree) wt=yes; shift;;
+      --like) like="$2"; shift 2;; --like=*) like="${1#*=}"; shift;;
+      *) die "unknown option $1";; esac; done
+    [ -n "$agent" ] || { for agent in claude codex gemini; do have "$agent" && break; done; }
+    printf '%-8s %s %s\n' "$r" "$agent" "$wt" >> "$CREW/crew.conf"
+    if [ -n "$like" ] && [ -f "$CREW/roles/$like.md" ]; then sed "s/^# Role: .*/# Role: $r/" "$CREW/roles/$like.md" > "$CREW/roles/$r.md"
+    else template_for "$r" > "$CREW/roles/$r.md"; fi
+    write_protocol
+    say_ok "added $r ($agent, worktree: $wt)"
+    say_info "describe it: crew role edit $r   •  bring it online: crew start"
+    ;;
+
+  edit)
+    local r="${1:-}"; role_exists "$r" || die "usage: crew role edit <role>"
+    ${VISUAL:-${EDITOR:-vi}} "$CREW/roles/$r.md"
+    if herdr_up && agent_alive "$r"; then
+      nudge "$r" "[crew] Your role file was updated. Re-read $CREW/roles/$r.md and follow the new version." &&
+        say_ok "told $r to re-read its role"
+    fi
+    ;;
+
+  show) local r="${1:-}"; role_exists "$r" || die "usage: crew role show <role>"; cat "$CREW/roles/$r.md" ;;
+
+  set)
+    local r="${1:-}"; shift 2>/dev/null; role_exists "$r" || die "usage: crew role set <role> agent=<x> | worktree=yes|no"
+    [ $# -ge 1 ] || die "usage: crew role set <role> agent=<x> | worktree=yes|no"
+    local kv agent wt; agent="$(role_agent "$r")"; wt="$(role_wt "$r")"
+    for kv in "$@"; do case "$kv" in
+      agent=*) agent="${kv#agent=}";; worktree=yes|worktree=no) wt="${kv#worktree=}";;
+      *) die "unknown setting '$kv'";; esac; done
+    awk -v r="$r" -v a="$agent" -v w="$wt" '$1==r{printf "%-8s %s %s\n", r, a, w; next}{print}' "$CREW/crew.conf" > "$CREW/crew.conf.tmp" &&
+      mv "$CREW/crew.conf.tmp" "$CREW/crew.conf"
+    write_protocol
+    say_ok "$r → agent $agent, worktree $wt"
+    say_info "apply now with: crew restart $r"
+    ;;
+
+  rm|remove)
+    local r="${1:-}"; role_exists "$r" || die "usage: crew role rm <role>"
+    local p; p="$(state_get "pane:$r")"; [ -n "$p" ] && herdr_up && herdr pane close "$p" >/dev/null 2>&1
+    state_set "pane:$r" ""
+    awk -v r="$r" '$1!=r' "$CREW/crew.conf" > "$CREW/crew.conf.tmp" && mv "$CREW/crew.conf.tmp" "$CREW/crew.conf"
+    write_protocol
+    say_ok "removed $r (role file kept at .crew/roles/$r.md; its worktree and branch are kept)"
+    ;;
+
+  save)
+    local r="${1:-}"
+    if [ -z "$r" ]; then
+      mkdir -p "$CREW_HOME"; cp "$CREW/crew.conf" "$CREW_HOME/crew.conf"
+      say_ok "saved this roster as your default for new repos ($CREW_HOME/crew.conf)"; return
+    fi
+    role_exists "$r" || [ -f "$CREW/roles/$r.md" ] || die "no role '$r'"
+    mkdir -p "$CREW_HOME/roles"; cp "$CREW/roles/$r.md" "$CREW_HOME/roles/$r.md"
+    say_ok "saved $r as your personal template — new crews will use it"
+    ;;
+
+  *) die "crew role: list | show <r> | add <r> [--agent a] [--no-worktree] [--like r] | edit <r> | set <r> agent=a worktree=yes|no | rm <r> | save [r]" ;;
+  esac
+}
+
+cmd_doctor() {
+  local ok=1 a
+  for a in git herdr; do have "$a" && say_ok "$a: $(command -v $a)" || { warn "$a missing"; ok=0; }; done
+  if have jq || have python3; then say_ok "json: $(have jq && echo jq || echo python3)"; else warn "need jq or python3 (brew install jq)"; ok=0; fi
+  for a in claude codex gemini; do have "$a" && say_ok "agent $a found" || say_info "agent $a not installed"; done
+  have herdr && { herdr_up && say_ok "herdr server running" || say_info "herdr server not running (crew start will launch it)"; }
+  [ $ok = 1 ]
+}
+
+usage() {
+  cat <<EOF
+${B}crew${N} $CREW_VERSION — a team of AI coding agents in herdr
+
+${B}Getting going${N}
+  crew setup                  create .crew/ in this repo (roster, roles, board, tasks)
+  crew start [--no-attach]    set up if needed, launch or revive every agent, open herdr
+  crew status                 who is running and what they are doing
+  crew stop                   close the herdr workspace (files and worktrees kept)
+  crew restart <role|all>     restart agents (they resume from their notes)
+  crew teardown               stop and remove clean worktrees
+
+${B}Talking${N}
+  crew say <role|all> "msg"   post to the board and drop it into their session
+  crew board [n]              last n lines of the board
+  crew tasks                  show tasks.md
+
+${B}Roles${N}
+  crew role                   list roles
+  crew role add <name> [--agent claude|codex|gemini] [--no-worktree] [--like <role>]
+  crew role edit <name>       edit its instructions (a running agent is told to re-read)
+  crew role set <name> agent=codex worktree=no
+  crew role rm <name>
+  crew role save [name]       save a role (or the whole roster) as your default for new repos
+
+  crew doctor                 check dependencies
+EOF
+}
+
+main() {
+  local c="${1:-help}"; shift 2>/dev/null
+  case "$c" in
+    setup|init)        cmd_setup "$@" ;;
+    start|up)          cmd_start "$@" ;;
+    say|tell|msg)      cmd_say "$@" ;;
+    board|log)         cmd_board "$@" ;;
+    tasks)             cmd_tasks "$@" ;;
+    status|ps)         cmd_status "$@" ;;
+    restart)           cmd_restart "$@" ;;
+    stop|down)         cmd_stop "$@" ;;
+    teardown)          cmd_teardown "$@" ;;
+    role|roles)        cmd_role "$@" ;;
+    doctor)            cmd_doctor "$@" ;;
+    version|--version) echo "crew $CREW_VERSION" ;;
+    help|-h|--help)    usage ;;
+    *)                 die "unknown command '$c' — try: crew help" ;;
+  esac
+}
+main "$@"
