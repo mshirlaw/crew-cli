@@ -1,0 +1,201 @@
+mkdir -p ~/.local/bin && cat > ~/.local/bin/crew <<'CREWEOF'
+#!/usr/bin/env bash
+# crew — spin up a team of AI coding agents (Claude Code, Codex, Gemini...) in herdr,
+# each with its own role, git worktree and a shared message board.
+#
+#   crew setup              create .crew/ (roles, board, tasks) in this repo
+#   crew start              setup if needed, launch/revive the team in herdr, attach
+#   crew say <to> <msg>     post to the board and nudge a teammate (to = role | all | human)
+#   crew role ...           list / add / edit / set / rm / save roles
+#   crew help               everything else
+#
+# Works with macOS's stock bash 3.2. Needs: git, herdr, and jq or python3.
+
+set -u
+
+CREW_VERSION="0.1.0"
+CREW_HOME="${CREW_HOME:-$HOME/.config/crew}"          # personal templates + defaults
+CREW_WORKTREES="${CREW_WORKTREES:-$HOME/.crew/worktrees}"
+HERDR_KINDS=" pi claude codex gemini cursor devin agy cline omp mastracode opencode copilot kimi kiro droid amp grok hermes kilo qodercli qwen letta maki muse "
+
+# ---------------------------------------------------------------- output helpers
+if [ -t 1 ]; then B=$'\033[1m'; D=$'\033[2m'; G=$'\033[32m'; Y=$'\033[33m'; R=$'\033[31m'; N=$'\033[0m'
+else B=; D=; G=; Y=; R=; N=; fi
+say_ok()   { printf '%s✓%s %s\n' "$G" "$N" "$*"; }
+say_info() { printf '%s•%s %s\n' "$D" "$N" "$*"; }
+warn()     { printf '%s!%s %s\n' "$Y" "$N" "$*" >&2; }
+die()      { printf '%s✗%s %s\n' "$R" "$N" "$*" >&2; exit 1; }
+have()     { command -v "$1" >/dev/null 2>&1; }
+
+# json_get '.result.pane.pane_id'  < json
+json_get() {
+  if have jq; then jq -r "$1 // empty" 2>/dev/null
+  elif have python3; then python3 -c '
+import sys, json
+try: d = json.load(sys.stdin)
+except Exception: sys.exit(0)
+for k in sys.argv[1].strip(".").split("."):
+    d = d.get(k) if isinstance(d, dict) else None
+print("" if d is None else d)' "$1"
+  else die "need jq or python3 to read herdr output (brew install jq)"; fi
+}
+
+# ---------------------------------------------------------------- repo context
+find_root() {
+  local common
+  common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" ||
+    common="$(cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd)" || return 1
+  [ -n "$common" ] || return 1
+  dirname "$common"
+}
+
+load_ctx() {
+  if [ -n "${CREW_DIR:-}" ] && [ -f "${CREW_DIR}/crew.conf" ]; then
+    CREW="$CREW_DIR"; ROOT="$(dirname "$CREW")"
+  else
+    ROOT="$(find_root)" || die "not inside a git repository"
+    CREW="$ROOT/.crew"
+  fi
+  local base; base="$(basename "$ROOT" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9\n' '-' | sed 's/^-*//;s/-*$//')"
+  case "$base" in [a-z]*) ;; *) base="r$base" ;; esac
+  SLUG="$(printf '%s' "$base" | cut -c1-16 | sed 's/-*$//')"
+  STATE="$CREW/state"
+  WT_BASE="$CREW_WORKTREES/$SLUG-$(printf '%s' "$ROOT" | cksum | cut -c1-6 | tr -d ' ')"
+}
+
+need_setup() { [ -f "$CREW/crew.conf" ] || die "no crew here yet — run: crew setup"; }
+
+# ---------------------------------------------------------------- config (crew.conf)
+# lines: <role> <agent> <worktree:yes|no>
+roles()       { grep -v '^[[:space:]]*#' "$CREW/crew.conf" | awk 'NF>=2{print $1}'; }
+role_agent()  { awk -v r="$1" '$1==r && $1 !~ /^#/{print $2; exit}' "$CREW/crew.conf"; }
+role_wt()     { awk -v r="$1" '$1==r && $1 !~ /^#/{print ($3==""?"yes":$3); exit}' "$CREW/crew.conf"; }
+role_exists() { roles | grep -qx "$1"; }
+agent_name()  { printf '%s-%s' "$SLUG" "$1"; }
+role_cwd()    { if [ "$(role_wt "$1")" = yes ]; then printf '%s/%s' "$WT_BASE" "$1"; else printf '%s' "$ROOT"; fi; }
+base_branch() { cat "$CREW/base" 2>/dev/null || echo main; }
+
+valid_role() { printf '%s' "$1" | grep -Eq '^[a-z][a-z0-9-]{0,14}$'; }
+
+# ---------------------------------------------------------------- state (key value)
+state_get() { [ -f "$STATE/session" ] && awk -v k="$1" '$1==k{print $2; exit}' "$STATE/session"; }
+state_set() {
+  mkdir -p "$STATE"; local f="$STATE/session"; touch "$f"
+  awk -v k="$1" '$1!=k' "$f" > "$f.tmp"; [ -n "${2:-}" ] && printf '%s %s\n' "$1" "$2" >> "$f.tmp"; mv "$f.tmp" "$f"
+}
+
+# ---------------------------------------------------------------- templates
+template_for() {   # print the role template for <role>: personal > built-in > generic
+  local r="$1"
+  if [ -f "$CREW_HOME/roles/$r.md" ]; then cat "$CREW_HOME/roles/$r.md"; return; fi
+  case "$r" in
+  lead) cat <<'EOF'
+# Role: lead
+
+You coordinate the crew. The human talks to you directly; you turn their goal into work for the team.
+
+- Break the goal into small, concrete tasks in `tasks.md` (owner, status, acceptance criteria).
+- Assign work with `crew say <role> "..."`. One clear task per message.
+- Keep the big picture: interfaces between tasks, ordering, what "done" means.
+- You work on the base branch. When the reviewer approves a branch, merge it
+  (`git merge crew/<role>`), run the tests, and tell everyone with `crew say all`.
+- Write only small glue code yourself; delegate real implementation.
+- Report progress and decisions to the human in plain language when they check in.
+EOF
+  ;;
+  builder) cat <<'EOF'
+# Role: builder
+
+You implement. You work in your own git worktree on branch `crew/builder`.
+
+- Take tasks assigned to you (board / tasks.md). If nothing is assigned, ask the lead.
+- Keep changes focused on the task. Write or update tests alongside the code.
+- Run the tests before saying you are done.
+- Commit early and often with clear messages; others read your work through git.
+- When a task is ready: commit, update tasks.md, then
+  `crew say reviewer "crew/builder ready: <what changed, how to test>"`.
+- Fix review feedback the same way and say so when it is addressed.
+EOF
+  ;;
+  reviewer) cat <<'EOF'
+# Role: reviewer
+
+You review. You do not write feature code.
+
+- When told a branch is ready, inspect it: `git log <base>..crew/<role>` and `git diff <base>...crew/<role>`.
+- Check correctness, edge cases, tests, security and readability. Run the tests in your own worktree
+  (`git checkout --detach crew/<role>` there is fine).
+- Send concrete, actionable feedback to the author with `crew say <role> "..."` (file:line, what, why).
+- When it is good, approve to the lead: `crew say lead "approved crew/<role>: <one-line summary>"`.
+- Do not edit other people's branches.
+EOF
+  ;;
+  tester) cat <<'EOF'
+# Role: tester
+
+You own test coverage and quality checks on branch `crew/tester`.
+
+- Write tests for features as they land; reproduce reported bugs as failing tests first.
+- Run the full suite regularly and report failures to the owner with `crew say`.
+- Commit your tests to your branch and tell the lead when they are ready to merge.
+EOF
+  ;;
+  *) cat <<EOF
+# Role: $r
+
+Describe what this agent is responsible for, what it should and should not touch,
+and who it hands work to. Edit with: crew role edit $r
+EOF
+  ;;
+  esac
+}
+
+write_protocol() {
+  local base; base="$(base_branch)"
+  {
+    cat <<EOF
+# Crew protocol (generated by \`crew\` — edit roles/*.md instead)
+
+You are one agent in a crew working on the repo at \`$ROOT\`.
+Shared crew folder: \`$CREW\`  (board.md, tasks.md, notes/, roles/)
+Base branch: \`$base\`
+
+## Team
+| role | agent | branch | works in |
+|------|-------|--------|----------|
+EOF
+    local r
+    for r in $(roles); do
+      if [ "$(role_wt "$r")" = yes ]; then
+        printf '| %s | %s | crew/%s | %s |\n' "$r" "$(role_agent "$r")" "$r" "$(role_cwd "$r")"
+      else
+        printf '| %s | %s | %s | %s (main checkout) |\n' "$r" "$(role_agent "$r")" "$base" "$ROOT"
+      fi
+    done
+    cat <<'EOF'
+
+## Rules
+1. On start, read your role file (roles/<you>.md), then board.md and tasks.md.
+   Re-read board.md and tasks.md before starting each new piece of work.
+2. Talk to teammates ONLY with the shell command:
+       crew say <role|all|human> "message"
+   It appends to board.md and pops the message into their session. Never edit board.md by hand.
+3. Messages from teammates arrive in your prompt starting with `[crew]`. Act on them, then continue.
+4. Do not send acknowledgement-only messages ("ok", "thanks", "got it"). Only message when you
+   need something, hand something over, or report a result. This keeps the crew from looping.
+5. Share code through git: commit to your own branch; others read it with
+   `git log` / `git diff <base>...crew/<role>`. Only the lead merges into the base branch.
+6. tasks.md is the source of truth for who is doing what. Update your task's status when it changes.
+7. Before you stop, or when your context is getting long, write a short handoff to
+   notes/<you>.md: what you finished, what is in progress, what is next. A restarted
+   you will read it.
+8. If you are blocked, say so immediately with `crew say lead "blocked: ..."` rather than waiting.
+EOF
+  } > "$CREW/PROTOCOL.md"
+}
+
+kickoff() {  # kickoff <role> [revive]
+  local r="$1" msg
+  msg="You are the $r agent in a multi-agent crew. Read $CREW/PROTOCOL.md and $CREW/roles/$r.md now and follow them, then read $CREW/board.md and $CREW/tasks.md."
+  [ "${2:-}" = revive ] && msg="$msg You were restarted: also read $CREW/notes/$r.md for your own handoff and continue from there."
+  [ "$r" = lead ] && [ "${2:-}" != revive ] && msg="$msg Then briefly greet
