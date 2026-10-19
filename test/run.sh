@@ -14,6 +14,16 @@ WORK="$(cd "$(mktemp -d)" && pwd -P)"   # physical path, so it matches what crew
 PASSED=0
 FAILED=0
 
+# Build crew before HOME changes below: cargo and rustup find their toolchains through HOME.
+CREW_BIN="${CREW_BIN:-$SOURCE_DIR/target/release/crew}"
+if [ "$CREW_BIN" = "$SOURCE_DIR/target/release/crew" ]; then
+  if ! (cd "$SOURCE_DIR" && cargo build --release --quiet); then
+    echo "cargo build failed" >&2
+    [ "${GITHUB_ACTIONS:-}" = true ] && echo "::error title=crew test failed::cargo build failed"
+    exit 1
+  fi
+fi
+
 # tmux's socket goes in a short path: macOS limits socket paths to about 104 characters.
 TMUX_TMPDIR="/tmp/crew-test-$$"
 export HOME="$WORK/home" PATH="$WORK/bin:$PATH" TMUX_TMPDIR GIT_CONFIG_NOSYSTEM=1
@@ -27,10 +37,6 @@ mkdir -p "$HOME" "$WORK/bin" "$WORK/log" "$TMUX_TMPDIR"
 cleanup() { tmux kill-server >/dev/null 2>&1; rm -rf "$WORK" "$TMUX_TMPDIR"; }
 trap cleanup EXIT
 
-CREW_BIN="${CREW_BIN:-$SOURCE_DIR/target/release/crew}"
-if [ "$CREW_BIN" = "$SOURCE_DIR/target/release/crew" ]; then
-  (cd "$SOURCE_DIR" && cargo build --release --quiet) || { echo "cargo build failed" >&2; exit 1; }
-fi
 
 # Runs the crew binary under test.
 crew() { "$CREW_BIN" "$@"; }
