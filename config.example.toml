@@ -19,6 +19,10 @@ paste_delay = 0.3
 # If the lead itself stalls, you get the alert. Set to 0 to turn this off.
 stall_timeout = 600
 
+# How many agents share a tab. The first fills the left half and the rest split the right
+# half evenly; any more agents go on extra tabs ("agents 2", ...).
+panes_per_tab = 4
+
 # How often, in seconds, crew checks for stalled agents.
 watch_interval = 30
 

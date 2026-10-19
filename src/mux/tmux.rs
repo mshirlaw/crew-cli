@@ -1,6 +1,5 @@
 use super::{Direction, Mux};
 use crate::crew::context::Ctx;
-use crate::crew::panes;
 use crate::util::ui;
 use crate::util::{has, run_all, run_ok, run_out, shell_join};
 use anyhow::{bail, Result};
@@ -22,6 +21,19 @@ fn env_args(ctx: &Ctx, role: &str) -> Vec<String> {
 }
 fn role_pane(ctx: &Ctx, role: &str) -> Option<String> {
     ctx.state.get(&format!("pane:{role}"))
+}
+fn agent_windows(ctx: &Ctx) -> Vec<String> {
+    let mut windows: Vec<String> = ctx
+        .roles()
+        .iter()
+        .filter_map(|role| role_pane(ctx, role))
+        .filter_map(|pane| run_out("tmux", &["display-message", "-p", "-t", &pane, "#{window_id}"]))
+        .map(|out| out.trim().to_string())
+        .filter(|window| !window.is_empty())
+        .collect();
+    windows.sort();
+    windows.dedup();
+    windows
 }
 
 impl Mux for Tmux {
@@ -74,7 +86,8 @@ impl Mux for Tmux {
         Ok(())
     }
 
-    fn split(&self, ctx: &Ctx, role: &str, from: &str, direction: Direction) -> Option<String> {
+    // Sizes are left to finish_layout, which evens out every window at once.
+    fn split(&self, ctx: &Ctx, role: &str, from: &str, direction: Direction, _keep: f32) -> Option<String> {
         let flag = if direction == Direction::Right { "-h" } else { "-v" };
         let mut args = vec![
             "split-window".to_string(),
@@ -170,10 +183,10 @@ impl Mux for Tmux {
     }
 
     fn finish_layout(&self, ctx: &Ctx) {
-        // First pane on the left, the rest stacked on the right.
-        if let Some(pane) = panes::any_live(ctx) {
-            run_ok("tmux", &["set-option", "-w", "-t", &pane, "main-pane-width", "50%"]);
-            run_ok("tmux", &["select-layout", "-t", &pane, "main-vertical"]);
+        // In each agents window: first pane on the left, the rest stacked on the right.
+        for window in agent_windows(ctx) {
+            run_ok("tmux", &["set-option", "-w", "-t", &window, "main-pane-width", "50%"]);
+            run_ok("tmux", &["select-layout", "-t", &window, "main-vertical"]);
         }
     }
 

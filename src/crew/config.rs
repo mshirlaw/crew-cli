@@ -136,6 +136,14 @@ impl Config {
         }
     }
 
+    pub fn panes_per_tab(&self) -> usize {
+        self.item(&["panes_per_tab"])
+            .and_then(Item::as_integer)
+            .and_then(|n| usize::try_from(n).ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(4)
+    }
+
     pub fn watch_interval(&self) -> u64 {
         self.item(&["watch_interval"])
             .and_then(Item::as_integer)

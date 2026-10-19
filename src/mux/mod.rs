@@ -21,7 +21,8 @@ pub trait Mux {
     fn workspace_exists(&self, ctx: &Ctx) -> bool;
     // Creates the workspace with the first role's pane and saves both ids in the state.
     fn create_workspace(&self, ctx: &Ctx, role: &str) -> Result<()>;
-    fn split(&self, ctx: &Ctx, role: &str, from: &str, direction: Direction) -> Option<String>;
+    // `keep` is the share of the space that `from` keeps; the new pane gets the rest.
+    fn split(&self, ctx: &Ctx, role: &str, from: &str, direction: Direction, keep: f32) -> Option<String>;
     // A role sets the new tab up for that agent; None is a plain tab (the board).
     fn new_tab(&self, ctx: &Ctx, label: &str, dir: &Path, role: Option<&str>) -> Option<String>;
     fn pane_exists(&self, pane: &str) -> bool;

@@ -213,10 +213,17 @@ check "--no-attach still works inside tmux"  env TMUX=/tmp/fake,1,0 "$CREW_BIN" 
 check "creates a workspace"                  file_has "$WORK/log/herdr" "workspace create"
 check "splits a pane per extra role"         test "$(grep -c '^pane split' "$WORK/log/herdr")" -eq 2
 check "opens the board tab"                  file_has "$WORK/log/herdr" "--label board"
+check "right column is split evenly"         file_has "$WORK/log/herdr" "--direction down --ratio 0.500"
 check "starts lead as a herdr agent"         file_has "$WORK/log/herdr" "agent start herdr-lead --kind claude"
 check "passes .crew to codex"                file_has "$WORK/log/herdr" "--kind codex --pane"
 check "say goes through agent prompt"        sh -c "$CREW_RUN say builder hi >/dev/null && grep -q 'agent prompt herdr-builder' '$WORK/log/herdr'"
 check "stop closes the workspace"            sh -c "$CREW_RUN stop >/dev/null && grep -q 'workspace close w1' '$WORK/log/herdr'"
+for extra in b2 b3 b4; do crew role add "$extra" --agent claude --no-worktree >/dev/null; done
+: > "$WORK/log/herdr"
+crew start --no-attach >/dev/null
+check "a fourth agent splits into thirds"    file_has "$WORK/log/herdr" "--direction down --ratio 0.333"
+check "agents past four get another tab"     file_has "$WORK/log/herdr" "--label agents 2"
+crew stop >/dev/null
 rm -f "$WORK/bin/herdr"
 
 # ------------------------------------------------------------ tmux (real)
@@ -269,6 +276,12 @@ if have_tmux3; then
   check "stop ends the watcher"              eventually sh -c "case \"\$(ps -p $WATCH_PID -o stat= 2>/dev/null)\" in ''|Z*) true ;; *) false ;; esac"
   check "teardown keeps branches"            sh -c "echo y | $CREW_RUN teardown >/dev/null && git -C '$R' show-ref -q refs/heads/crew/builder"
   check "teardown removes worktrees"         sh -c "! ls -d '$HOME'/.crew/worktrees/tmux-*/builder 2>/dev/null"
+  for extra in b2 b3 b4; do crew role add "$extra" --agent claude --no-worktree >/dev/null; done
+  crew start --no-attach >/dev/null
+  check "four panes in the first window"     test "$(tmux list-panes -t '=crew-tmux:agents' | wc -l | tr -d ' ')" -eq 4
+  check "the rest go in a second window"     test "$(tmux list-panes -t '=crew-tmux:agents 2' | wc -l | tr -d ' ')" -eq 2
+  check "stacked panes are the same height"  test "$(tmux list-panes -t '=crew-tmux:agents' -F '#{pane_left} #{pane_height}' | awk '$1 > 0 {print $2}' | sort -u | wc -l | tr -d ' ')" -le 2
+  crew stop >/dev/null
 else
   echo "# tmux: skipped (tmux 3.0+ not installed)"
 fi

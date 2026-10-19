@@ -13,19 +13,8 @@ pub fn build(ctx: &Ctx) -> Result<()> {
     ctx.state.clear();
     ctx.state.set("mux", ctx.mux.name());
     ctx.mux.create_workspace(ctx, first)?;
-    let mut right: Option<String> = None;
-    for role in roles.iter().skip(1) {
-        let pane = match &right {
-            None => ctx
-                .state
-                .get(&format!("pane:{first}"))
-                .and_then(|from| ctx.mux.split(ctx, role, &from, Direction::Right)),
-            Some(above) => ctx.mux.split(ctx, role, above, Direction::Down),
-        };
-        if let Some(pane) = pane {
-            ctx.state.set(&format!("pane:{role}"), &pane);
-            right = Some(pane);
-        }
+    for (index, group) in roles.chunks(ctx.config.panes_per_tab()).enumerate() {
+        lay_out_tab(ctx, index, group);
     }
     ctx.mux.finish_layout(ctx);
     open_board_tab(ctx);
@@ -37,6 +26,47 @@ pub fn build(ctx: &Ctx) -> Result<()> {
         }
     }
     board::post(ctx, "crew", "all", &format!("Crew started: {}", roles.join(" ")))
+}
+
+// The tab's first role fills the left half; the others share the right half evenly.
+fn lay_out_tab(ctx: &Ctx, index: usize, group: &[String]) {
+    let Some((main_role, stacked)) = group.split_first() else { return };
+    let main = if index == 0 {
+        ctx.state.get(&format!("pane:{main_role}"))
+    } else {
+        ctx.mux.new_tab(ctx, &tab_label(index), &ctx.role_dir(main_role), Some(main_role))
+    };
+    let Some(main) = main else {
+        ui::warn(format!("could not create a pane for {main_role}"));
+        return;
+    };
+    ctx.state.set(&format!("pane:{main_role}"), &main);
+    let mut above: Option<String> = None;
+    for (i, role) in stacked.iter().enumerate() {
+        let pane = match &above {
+            None => ctx.mux.split(ctx, role, &main, Direction::Right, 0.5),
+            Some(pane) => ctx.mux.split(ctx, role, pane, Direction::Down, even_share(stacked.len() - i + 1)),
+        };
+        if let Some(pane) = pane {
+            ctx.state.set(&format!("pane:{role}"), &pane);
+            above = Some(pane);
+        }
+    }
+}
+
+// Splitting a pane that must still hold `panes` panes leaves it 1/panes of the space,
+// so a column built top to bottom ends up with equal heights.
+#[allow(clippy::cast_precision_loss)] // pane counts are tiny
+fn even_share(panes: usize) -> f32 {
+    1.0 / panes as f32
+}
+
+fn tab_label(index: usize) -> String {
+    if index == 0 {
+        "agents".to_string()
+    } else {
+        format!("agents {}", index + 1)
+    }
 }
 
 pub fn revive(ctx: &Ctx) {
@@ -59,7 +89,7 @@ fn pane_for(ctx: &Ctx, role: &str) -> Option<String> {
         return Some(pane);
     }
     let pane = match any_live(ctx) {
-        Some(anchor) => ctx.mux.split(ctx, role, &anchor, Direction::Down),
+        Some(anchor) => ctx.mux.split(ctx, role, &anchor, Direction::Down, 0.5),
         None => ctx.mux.new_tab(ctx, "agents", &ctx.role_dir(role), Some(role)),
     };
     let Some(pane) = pane else {
@@ -71,7 +101,7 @@ fn pane_for(ctx: &Ctx, role: &str) -> Option<String> {
     Some(pane)
 }
 
-pub fn any_live(ctx: &Ctx) -> Option<String> {
+fn any_live(ctx: &Ctx) -> Option<String> {
     ctx.roles().iter().filter_map(|role| ctx.state.get(&format!("pane:{role}"))).find(|pane| ctx.mux.pane_exists(pane))
 }
 
@@ -98,5 +128,30 @@ pub fn forget_other_mux_state(ctx: &Ctx) {
     let saved = ctx.state.get("mux").unwrap_or_else(|| "herdr".to_string());
     if saved != ctx.mux.name() {
         ctx.state.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_column_built_top_down_comes_out_even() {
+        // Three stacked panes of height 1: each split keeps 1/remaining of what's left.
+        let mut remaining = 1.0;
+        let mut heights = Vec::new();
+        for panes in (2..=3).rev() {
+            let kept = remaining * even_share(panes);
+            heights.push(kept);
+            remaining -= kept;
+        }
+        heights.push(remaining);
+        assert!(heights.iter().all(|h| (h - 1.0 / 3.0).abs() < 1e-6), "{heights:?}");
+    }
+
+    #[test]
+    fn extra_tabs_are_numbered_from_two() {
+        assert_eq!(tab_label(0), "agents");
+        assert_eq!(tab_label(1), "agents 2");
     }
 }

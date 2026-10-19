@@ -80,7 +80,7 @@ These were settled while building crew. Don't reverse one without a good reason,
 - **herdr is driven through its CLI,** whose command shapes are tested against a fake. Its JSON is parsed with serde_json (no jq). Talking to herdr's socket API directly is a possible future improvement.
 - **tmux can only report running or stopped.** An agent counts as running when the pane's shell has a child process. It isn't matched by process name, because many agent wrappers are shell scripts.
 - **Never nest one multiplexer in the other.** If `crew start` would open herdr inside tmux, or tmux inside herdr, it stops with an error before creating anything (both default to `ctrl+b`, so nesting is confusing). The human chose an error over silently switching multiplexers, because it's an edge case. `--no-attach` still works, since it opens nothing.
-- **The tmux layout is `main-vertical`:** the first role on the left, the rest stacked on the right, plus a `board` window tailing `board.md`.
+- **Layout: at most `panes_per_tab` agents (default 4) per tab,** the first on the left and the rest stacked evenly on the right; more agents go on extra `agents 2`, `agents 3` tabs, plus a `board` tab tailing `board.md`. Splitting each pane in half made the right column shrink to ½, ¼, ⅛… and with eight agents the last ones were unreadable (found on the human's first big crew). herdr gets even heights from `pane split --ratio` (the share the existing pane keeps, so 1/remaining); tmux uses `main-vertical` on each window.
 - **State records which multiplexer created it.** Switching multiplexers discards stale pane ids instead of reusing them.
 
 ### Tasks

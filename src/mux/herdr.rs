@@ -69,7 +69,7 @@ impl Mux for Herdr {
         Ok(())
     }
 
-    fn split(&self, ctx: &Ctx, role: &str, from: &str, direction: Direction) -> Option<String> {
+    fn split(&self, ctx: &Ctx, role: &str, from: &str, direction: Direction, keep: f32) -> Option<String> {
         let direction = if direction == Direction::Right { "right" } else { "down" };
         let mut args = vec![
             "pane".to_string(),
@@ -77,6 +77,8 @@ impl Mux for Herdr {
             from.into(),
             "--direction".into(),
             direction.into(),
+            "--ratio".into(),
+            format!("{keep:.3}"),
             "--cwd".into(),
             ctx.role_dir(role).display().to_string(),
         ];
