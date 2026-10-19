@@ -1,0 +1,37 @@
+# crew global settings. Applies to every repo; a repo's .crew/config.toml overrides anything here.
+
+# Which terminal multiplexer runs the agents: "herdr" or "tmux".
+# herdr shows each agent's state (working, blocked, done) and can tell when one is busy.
+# tmux works anywhere but can only tell whether an agent is running.
+multiplexer = "herdr"
+
+# Where agent worktrees are created. Each repo gets its own folder inside.
+worktree_dir = "~/.crew/worktrees"
+
+# How each agent is launched. Placeholders:
+#   {crew}   the shared .crew folder (agents need access to it)
+#   {repo}   the repo's main folder
+#   {role}   the role name
+#   {prompt} the kickoff prompt; if you leave it out, it's added as the last argument
+# kind (herdr only): which herdr agent kind to use. Set kind = "" to have herdr
+# type your exact command instead, e.g. for a wrapper script or a custom CLI.
+
+[agents.claude]
+command = "claude --add-dir {crew}"
+
+[agents.codex]
+command = "codex --add-dir {crew}"
+
+[agents.gemini]
+command = "gemini --include-directories {crew} -i"
+
+# Any other CLI works too:
+# [agents.mytool]
+# command = "mytool --workspace {crew} --message {prompt}"
+# kind = ""
+
+# Default roles for new repos. "crew setup" copies these into .crew/config.toml.
+# "crew role save" (no name) replaces them with the current repo's roles.
+# [roles.lead]
+# agent = "claude"
+# worktree = false

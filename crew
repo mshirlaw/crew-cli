@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
-# crew: start a team of AI coding agents in herdr, each with a role,
+# crew: start a team of AI coding agents in herdr or tmux, each with a role,
 # its own git worktree, and a shared message board.
 # Run "crew help" for commands. Works with macOS bash 3.2 and Linux.
-# Needs git, herdr, and jq or python3.
+# Needs git, plus herdr (and jq or python3) or tmux 3.0+.
 
 set -u
 
-CREW_VERSION="0.2.0"
-CREW_HOME="${CREW_HOME:-$HOME/.config/crew}"
-CREW_WORKTREES="${CREW_WORKTREES:-$HOME/.crew/worktrees}"
+CREW_VERSION="0.3.0"
+CREW_HOME="${CREW_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/crew}"
+GLOBAL_CONFIG="$CREW_HOME/config.toml"
+
+# Agent kinds herdr can start and track itself (from herdr 0.9.5). Override per agent with "kind" in the config.
 HERDR_KINDS=" pi claude codex gemini cursor devin agy cline omp mastracode opencode copilot kimi kiro droid amp grok hermes kilo qodercli qwen letta maki muse "
 
 # ============================================================ output
@@ -34,6 +36,25 @@ die() { printf '%s✗%s %s\n' "$RED" "$RESET" "$*" >&2; exit 1; }
 # Succeeds if a command is on the PATH.
 has() { command -v "$1" >/dev/null 2>&1; }
 
+# Turns a leading ~ into the home folder.
+expand_home() {
+  case "$1" in
+    "~")   printf '%s' "$HOME" ;;
+    "~/"*) printf '%s/%s' "$HOME" "${1#\~/}" ;;
+    *)     printf '%s' "$1" ;;
+  esac
+}
+
+# Shows a path with the home folder written as ~.
+tilde() { case "$1" in "$HOME"/*) printf '~/%s' "${1#$HOME/}" ;; *) printf '%s' "$1" ;; esac; }
+
+# Joins words into one shell-safe command line.
+quote_words() {
+  local w out=""
+  for w in "$@"; do out="$out $(printf '%q' "$w")"; done
+  printf '%s' "${out# }"
+}
+
 # Reads JSON on stdin and prints the value at a dotted path like .result.pane.pane_id.
 json_get() {
   if has jq; then
@@ -47,20 +68,106 @@ for k in sys.argv[1].strip(".").split("."):
     d = d.get(k) if isinstance(d, dict) else None
 print("" if d is None else d)' "$1"
   else
-    die "need jq or python3 (install jq)"
+    die "herdr support needs jq or python3. Install jq."
   fi
 }
 
-# ============================================================ repo context
+# ============================================================ TOML
+# crew reads a simple subset of TOML: [sections], key = "string", numbers and true/false.
+# Arrays and inline tables are not supported.
+
+# Prints a TOML file as "key<TAB>value" lines, plus "@<TAB>section" for each [section].
+toml_flatten() {
+  [ -f "$1" ] || return 0
+  awk '
+    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t\r]+$/, "", s); return s }
+    function unquote(v,   out, c) {
+      if (substr(v, 1, 1) == "\"") {
+        v = substr(v, 2); out = ""
+        while (length(v) > 0) {
+          c = substr(v, 1, 1)
+          if (c == "\\") { out = out substr(v, 2, 1); v = substr(v, 3); continue }
+          if (c == "\"") break
+          out = out c; v = substr(v, 2)
+        }
+        return out
+      }
+      if (substr(v, 1, 1) == "\047") { v = substr(v, 2); c = index(v, "\047"); return c ? substr(v, 1, c - 1) : v }
+      c = index(v, "#"); if (c) v = substr(v, 1, c - 1)
+      return trim(v)
+    }
+    { line = trim($0) }
+    line == "" || substr(line, 1, 1) == "#" { next }
+    substr(line, 1, 1) == "[" {
+      section = line; sub(/^\[[ \t]*/, "", section); sub(/[ \t]*\].*$/, "", section)
+      print "@\t" section
+      next
+    }
+    index(line, "=") > 0 {
+      key = trim(substr(line, 1, index(line, "=") - 1)); gsub(/"/, "", key)
+      val = unquote(trim(substr(line, index(line, "=") + 1))); gsub(/\t/, " ", val)
+      print (section == "" ? key : section "." key) "\t" val
+    }
+  ' "$1"
+}
+
+# Prints a TOML file keeping (keep) or dropping (drop) the sections whose name matches a regex.
+toml_filter() {
+  awk -v mode="$2" -v re="$3" '
+    /^[ \t]*\[/ { s = $0; sub(/^[ \t]*\[[ \t]*/, "", s); sub(/[ \t]*\].*$/, "", s); inside = (s ~ re) }
+    (mode == "keep" && inside) || (mode == "drop" && !inside) { print }
+  ' "$1" | cat -s
+}
+
+# Sets key = value in a [section] of a TOML file, adding the key or section if missing.
+# The value is written exactly as given, so quote strings yourself.
+toml_set() {
+  local file="$1" section="$2" key="$3" value="$4"
+  touch "$file"
+  awk -v sec="$section" -v key="$key" -v val="$value" '
+    function header(l) { if (l !~ /^[ \t]*\[/) return ""; sub(/^[ \t]*\[[ \t]*/, "", l); sub(/[ \t]*\].*$/, "", l); return l }
+    { L[++n] = $0 }
+    END {
+      for (i = 1; i <= n; i++) if (header(L[i]) == sec) { start = i; break }
+      if (!start) {
+        for (i = 1; i <= n; i++) print L[i]
+        if (n && L[n] != "") print ""
+        print "[" sec "]"; print key " = " val
+        exit
+      }
+      stop = n + 1
+      for (i = start + 1; i <= n; i++) if (header(L[i]) != "") { stop = i; break }
+      last = start
+      for (i = start + 1; i < stop; i++) {
+        t = L[i]; sub(/^[ \t]+/, "", t)
+        if (t != "" && substr(t, 1, 1) != "#") last = i
+        if (index(t, key) == 1 && substr(t, length(key) + 1) ~ /^[ \t]*=/) at = i
+      }
+      for (i = 1; i <= n; i++) {
+        if (i == at) { print key " = " val; continue }
+        print L[i]
+        if (!at && i == last) print key " = " val
+      }
+    }
+  ' "$file" > "$file.tmp" && mv "$file.tmp" "$file"
+}
+
+# Removes a [section] and its keys from a TOML file.
+toml_remove_section() {
+  toml_filter "$1" drop "^$2\$" > "$1.tmp" && mv "$1.tmp" "$1"
+}
+
+# ============================================================ repo context and config
 
 # Prints the main checkout's root folder, even when run from a worktree.
 repo_root() {
   local common
-  common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
-  [ -n "$common" ] && dirname "$common"
+  common="$(git rev-parse --git-common-dir 2>/dev/null)" || return 1
+  common="$(cd "$common" 2>/dev/null && pwd)" || return 1
+  dirname "$common"
 }
 
-# Turns a folder name into a short lowercase id usable in agent names.
+# Turns a folder name into a short lowercase id usable in agent and session names.
 slugify() {
   local s
   s="$(printf '%s' "$1" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9' '-' | sed 's/^-*//;s/-*$//')"
@@ -68,9 +175,9 @@ slugify() {
   printf '%s' "$s" | cut -c1-16 | sed 's/-*$//'
 }
 
-# Sets ROOT, CREW, STATE, SLUG and WT_BASE for the current repo.
+# Sets ROOT, CREW, STATE and SLUG for the current repo, then loads the config.
 load_context() {
-  if [ -n "${CREW_DIR:-}" ] && [ -f "$CREW_DIR/crew.conf" ]; then
+  if [ -n "${CREW_DIR:-}" ] && [ -d "$CREW_DIR" ]; then
     CREW="$CREW_DIR"; ROOT="$(dirname "$CREW")"
   else
     ROOT="$(repo_root)" || die "not inside a git repository"
@@ -78,68 +185,675 @@ load_context() {
   fi
   STATE="$CREW/state"
   SLUG="$(slugify "$(basename "$ROOT")")"
-  WT_BASE="$CREW_WORKTREES/$SLUG-$(printf '%s' "$ROOT" | cksum | cut -c1-6 | tr -d ' ')"
+  migrate_old_roster
+  load_config
+}
+
+# Reads the global and repo config files into CONFIG (repo wins), and sets MUX and WT_BASE.
+load_config() {
+  CONFIG="$(toml_flatten "$GLOBAL_CONFIG"; [ -n "${CREW:-}" ] && toml_flatten "$CREW/config.toml")"
+  MUX="$(cfg multiplexer herdr)"
+  case "$MUX" in herdr|tmux) ;; *) die "multiplexer must be \"herdr\" or \"tmux\", not \"$MUX\" (see crew config)" ;; esac
+  WT_BASE="$(expand_home "$(cfg worktree_dir "~/.crew/worktrees")")/${SLUG:-}-$(printf '%s' "${ROOT:-}" | cksum | cut -c1-6 | tr -d ' ')"
+}
+
+# Prints a config value, or the given default if it isn't set.
+cfg() {
+  local v
+  if v="$(printf '%s\n' "$CONFIG" | awk -F '\t' -v k="$1" '$1 == k { v = $2; found = 1 } END { if (found) print v; else exit 1 }')"; then
+    printf '%s' "$v"
+  else
+    printf '%s' "${2:-}"
+  fi
 }
 
 # Exits with a hint if this repo has no crew yet.
-require_crew() { [ -f "$CREW/crew.conf" ] || die "no crew here yet. Run: crew setup"; }
+require_crew() { [ -f "$CREW/config.toml" ] || die "no crew here yet. Run: crew setup"; }
 
-# ============================================================ roster (crew.conf)
-# Each line is: <role> <agent> <worktree yes|no>
+# Converts an old .crew/crew.conf roster (crew 0.2) into .crew/config.toml.
+migrate_old_roster() {
+  [ -f "$CREW/crew.conf" ] && [ ! -f "$CREW/config.toml" ] || return 0
+  {
+    repo_config_header "$(cat "$CREW/base" 2>/dev/null || echo main)"
+    grep -v '^[[:space:]]*#' "$CREW/crew.conf" |
+      awk 'NF >= 2 { printf "\n[roles.%s]\nagent = \"%s\"\nworktree = %s\n", $1, $2, ($3 == "no" ? "false" : "true") }'
+  } > "$CREW/config.toml"
+  mv "$CREW/crew.conf" "$CREW/crew.conf.old"
+  info "converted .crew/crew.conf to .crew/config.toml"
+}
 
-# Prints every role name, one per line.
-list_roles() { grep -v '^[[:space:]]*#' "$CREW/crew.conf" | awk 'NF>=2 {print $1}'; }
+# ============================================================ roles
 
-# Succeeds if the role is in the roster.
+# Prints every role name, in the order they appear in .crew/config.toml.
+list_roles() {
+  toml_flatten "$CREW/config.toml" | awk -F '\t' '$1 == "@" && $2 ~ /^roles\./ { sub(/^roles\./, "", $2); print $2 }'
+}
+
+# Succeeds if the role is in the repo config.
 role_exists() { list_roles | grep -qx "$1"; }
 
-# Prints the agent CLI that plays a role.
-role_agent() { awk -v r="$1" '$1==r {print $2; exit}' "$CREW/crew.conf"; }
+# Prints the agent that plays a role.
+role_agent() { cfg "roles.$1.agent" "$(first_installed claude codex gemini)"; }
 
-# Prints yes or no: whether a role gets its own worktree.
-role_worktree() { awk -v r="$1" '$1==r {print ($3=="" ? "yes" : $3); exit}' "$CREW/crew.conf"; }
+# Succeeds if a role works in its own worktree.
+role_has_worktree() { [ "$(cfg "roles.$1.worktree" true)" = true ]; }
 
 # Prints the folder a role works in.
-role_dir() {
-  if [ "$(role_worktree "$1")" = yes ]; then printf '%s/%s' "$WT_BASE" "$1"; else printf '%s' "$ROOT"; fi
-}
+role_dir() { if role_has_worktree "$1"; then printf '%s/%s' "$WT_BASE" "$1"; else printf '%s' "$ROOT"; fi; }
 
 # Prints the herdr agent name for a role, e.g. my-app-builder.
 agent_name() { printf '%s-%s' "$SLUG" "$1"; }
 
 # Prints the branch the crew merges into.
-base_branch() { cat "$CREW/base" 2>/dev/null || echo main; }
+base_branch() { cfg base_branch "$(cat "$CREW/base" 2>/dev/null || echo main)"; }
 
 # Succeeds if a role name is lowercase letters, digits and dashes, 15 chars max.
 valid_role_name() { printf '%s' "$1" | grep -Eq '^[a-z][a-z0-9-]{0,14}$'; }
 
-# Adds a role line to the roster.
-roster_add() { printf '%-8s %s %s\n' "$1" "$2" "$3" >> "$CREW/crew.conf"; }
-
-# Replaces a role's line in the roster.
-roster_update() {
-  awk -v r="$1" -v a="$2" -v w="$3" '$1==r {printf "%-8s %s %s\n", r, a, w; next} {print}' \
-    "$CREW/crew.conf" > "$CREW/crew.conf.tmp" && mv "$CREW/crew.conf.tmp" "$CREW/crew.conf"
+# Prints the first agent in the list that's installed, or the first one if none are.
+first_installed() {
+  local a
+  for a in "$@"; do has "$a" && { echo "$a"; return; }; done
+  echo "$1"
 }
 
-# Deletes a role's line from the roster.
-roster_remove() {
-  awk -v r="$1" '$1!=r' "$CREW/crew.conf" > "$CREW/crew.conf.tmp" && mv "$CREW/crew.conf.tmp" "$CREW/crew.conf"
+# Prints true or false for a yes/no style answer.
+to_bool() { case "$1" in yes|true|on|1) echo true ;; *) echo false ;; esac; }
+
+# ============================================================ agents
+
+# Prints the launch command for an agent, e.g. "claude --add-dir {crew}".
+agent_command() {
+  local default
+  case "$1" in
+    claude|codex) default="$1 --add-dir {crew}" ;;
+    gemini)       default="gemini --include-directories {crew} -i" ;;
+    *)            default="$1" ;;
+  esac
+  cfg "agents.$1.command" "$default"
+}
+
+# Prints the herdr kind for an agent, or nothing if herdr should just type the command.
+agent_kind() {
+  local default=""
+  case "$HERDR_KINDS" in *" $1 "*) default="$1" ;; esac
+  cfg "agents.$1.kind" "$default"
+}
+
+# Prints a role's full agent command, one word per line, with {crew} {repo} {role} {prompt} filled in.
+agent_words() {
+  local role="$1" mode="${2:-}" prompt cmd word used=no words
+  prompt="$(kickoff_prompt "$role" "$mode")"
+  cmd="$(agent_command "$(role_agent "$role")")"
+  [ -n "$cmd" ] || cmd="$(role_agent "$role")"
+  read -r -a words <<< "$cmd"
+  for word in "${words[@]}"; do
+    case "$word" in *"{prompt}"*) used=yes ;; esac
+    word="${word//\{crew\}/$CREW}"
+    word="${word//\{repo\}/$ROOT}"
+    word="${word//\{role\}/$role}"
+    word="${word//\{prompt\}/$prompt}"
+    printf '%s\n' "$word"
+  done
+  [ "$used" = yes ] || printf '%s\n' "$prompt"
+}
+
+# Prints the first message an agent receives, telling it where its instructions are.
+kickoff_prompt() {
+  local role="$1" mode="${2:-}" msg
+  msg="You are the $role agent in a multi-agent crew. Read $CREW/PROTOCOL.md and $CREW/roles/$role.md now and follow them, then read $CREW/board.md and $CREW/tasks.md."
+  if [ "$mode" = revive ]; then
+    msg="$msg You were restarted: also read $CREW/notes/$role.md for your own handoff and continue from there."
+  elif [ "$role" = lead ]; then
+    msg="$msg Then briefly greet the human and ask what the crew should work on."
+  fi
+  printf '%s' "$msg"
+}
+
+# Starts a role's agent in a pane using the configured multiplexer.
+launch_agent() {
+  local role="$1" pane="$2" mode="${3:-}" line words=()
+  while IFS= read -r line; do words+=("$line"); done <<EOF
+$(agent_words "$role" "$mode")
+EOF
+  has "${words[0]}" || { warn "$role: '${words[0]}' is not installed, pane left as a shell"; return 1; }
+  mux start_agent "$role" "$pane" "${words[@]}"
 }
 
 # ============================================================ session state
-# Stored as "key value" lines: the workspace id and each role's pane id.
+# Stored as "key value" lines: the multiplexer, the workspace, and each role's pane.
 
 # Prints the saved value for a key.
-state_get() { [ -f "$STATE/session" ] && awk -v k="$1" '$1==k {print $2; exit}' "$STATE/session"; }
+state_get() { [ -f "$STATE/session" ] && awk -v k="$1" '$1 == k { print $2; exit }' "$STATE/session"; }
 
 # Saves a value for a key, or removes the key when the value is empty.
 state_set() {
   local f="$STATE/session"
   mkdir -p "$STATE"; touch "$f"
-  awk -v k="$1" '$1!=k' "$f" > "$f.tmp"
+  awk -v k="$1" '$1 != k' "$f" > "$f.tmp"
   [ -n "${2:-}" ] && printf '%s %s\n' "$1" "$2" >> "$f.tmp"
   mv "$f.tmp" "$f"
+}
+
+# Forgets saved panes if they belong to a different multiplexer than the one configured now.
+forget_other_mux_state() {
+  local saved; saved="$(state_get mux)"
+  [ "${saved:-herdr}" = "$MUX" ] || rm -f "$STATE/session"
+}
+
+# ============================================================ multiplexer
+# Each action has a herdr_ and a tmux_ version. mux picks the configured one.
+
+# Runs a multiplexer action, e.g. "mux split ..." calls herdr_split or tmux_split.
+mux() { local action="$1"; shift; "${MUX}_$action" "$@"; }
+
+# ------------------------------------------------------------ herdr
+
+# Succeeds if a herdr server is answering.
+herdr_ready() { herdr workspace list >/dev/null 2>&1; }
+
+# Starts a background herdr server if none is running, and waits for it.
+herdr_ensure() {
+  local i=0
+  has herdr || die "herdr not found. Install it from https://herdr.dev, or set multiplexer = \"tmux\""
+  herdr_ready && return 0
+  info "starting herdr server in the background"
+  mkdir -p "$STATE"
+  nohup herdr server > "$STATE/herdr-server.log" 2>&1 &
+  while [ $i -lt 40 ]; do herdr_ready && return 0; sleep 0.25; i=$((i + 1)); done
+  die "herdr server did not start (see $STATE/herdr-server.log)"
+}
+
+# Succeeds if the saved crew workspace still exists.
+herdr_workspace_exists() { local ws; ws="$(state_get ws)"; [ -n "$ws" ] && herdr workspace get "$ws" >/dev/null 2>&1; }
+
+# Creates the crew workspace with the first role's pane, and saves both ids.
+herdr_create_workspace() {
+  local role="$1" out ws pane tab
+  out="$(herdr workspace create --cwd "$(role_dir "$role")" --label "crew:$SLUG" \
+        --env "CREW_DIR=$CREW" --env "CREW_ROLE=$role" --no-focus 2>&1)" || die "could not create workspace: $out"
+  ws="$(printf '%s' "$out" | json_get '.result.workspace.workspace_id')"
+  pane="$(printf '%s' "$out" | json_get '.result.root_pane.pane_id')"
+  tab="$(printf '%s' "$out" | json_get '.result.tab.tab_id')"
+  [ -n "$ws" ] && [ -n "$pane" ] || die "unexpected herdr response: $out"
+  herdr tab rename "$tab" agents >/dev/null 2>&1
+  state_set ws "$ws"
+  state_set "pane:$role" "$pane"
+  ok "herdr workspace crew:$SLUG ($ws)"
+}
+
+# Splits a pane (right or down) to make one for a role, and prints the new pane id.
+herdr_split() {
+  local role="$1" from="$2" direction="$3" out
+  out="$(herdr pane split "$from" --direction "$direction" --cwd "$(role_dir "$role")" \
+        --env "CREW_DIR=$CREW" --env "CREW_ROLE=$role" --no-focus 2>&1)" || { warn "split failed: $out"; return 1; }
+  printf '%s' "$out" | json_get '.result.pane.pane_id'
+}
+
+# Opens a new tab and prints its pane id. Pass a role to set the tab up for that agent.
+herdr_new_tab() {
+  local label="$1" dir="$2" role="${3:-}" out
+  if [ -n "$role" ]; then
+    out="$(herdr tab create --workspace "$(state_get ws)" --cwd "$dir" --label "$label" \
+          --env "CREW_DIR=$CREW" --env "CREW_ROLE=$role" --no-focus 2>&1)"
+  else
+    out="$(herdr tab create --workspace "$(state_get ws)" --cwd "$dir" --label "$label" --no-focus 2>&1)"
+  fi
+  printf '%s' "$out" | json_get '.result.root_pane.pane_id'
+}
+
+# Succeeds if a pane still exists.
+herdr_pane_exists() { [ -n "$1" ] && herdr pane get "$1" >/dev/null 2>&1; }
+
+# Types a command into a pane and presses Enter.
+herdr_run() { herdr pane run "$1" "$2" >/dev/null 2>&1; }
+
+# Starts an agent. Known kinds go through herdr so they get a name and status; others are typed in.
+herdr_start_agent() {
+  local role="$1" pane="$2" kind out tries=0
+  shift 2
+  kind="$(agent_kind "$(role_agent "$role")")"
+  if [ -z "$kind" ]; then
+    if herdr_run "$pane" "$(quote_words "$@")"; then ok "$role → $1 launched"; else warn "$role: could not launch $1"; fi
+    return
+  fi
+  shift  # herdr runs its own executable for a known kind
+  while [ $tries -lt 4 ]; do
+    out="$(herdr agent start "$(agent_name "$role")" --kind "$kind" --pane "$pane" --timeout 25000 -- "$@" 2>&1)" &&
+      { ok "$role → $kind ready"; return 0; }
+    case "$out" in
+      *agent_not_ready*) ok "$role → $kind started (approve the prompt in its pane)"; return 0 ;;
+      *timeout*)         ok "$role → $kind started (busy with its kickoff)"; return 0 ;;
+    esac
+    tries=$((tries + 1)); sleep 1
+  done
+  warn "$role: herdr agent start failed: $(printf '%s' "$out" | head -c 300)"
+  return 1
+}
+
+# Succeeds if a role's agent is running.
+herdr_agent_running() { herdr agent get "$(agent_name "$1")" >/dev/null 2>&1; }
+
+# Prints a role's agent state: working, idle, blocked, done or stopped.
+herdr_agent_status() {
+  local s
+  s="$(herdr agent get "$(agent_name "$1")" 2>/dev/null | json_get '.result.agent.agent_status')"
+  echo "${s:-stopped}"
+}
+
+# Types a message into a role's agent. Fails if the agent can't take it right now.
+herdr_deliver() {
+  local role="$1" text="$2" pane
+  herdr agent prompt "$(agent_name "$role")" "$text" >/dev/null 2>&1 && return 0
+  pane="$(state_get "pane:$role")"
+  [ -n "$pane" ] && herdr agent prompt "$pane" "$text" >/dev/null 2>&1
+}
+
+# Closes a pane.
+herdr_close_pane() { herdr pane close "$1" >/dev/null 2>&1; }
+
+# Closes the crew workspace.
+herdr_close_workspace() { local ws; ws="$(state_get ws)"; [ -n "$ws" ] && herdr workspace close "$ws" >/dev/null 2>&1; }
+
+# Tidies the layout after panes are added. herdr needs nothing.
+herdr_finish_layout() { :; }
+
+# Opens herdr on the crew workspace, unless we're already inside herdr.
+herdr_attach() {
+  herdr workspace focus "$(state_get ws)" >/dev/null 2>&1
+  if [ "${HERDR_ENV:-}" = 1 ]; then info "already inside herdr, switched to crew:$SLUG"; else exec herdr; fi
+}
+
+# ------------------------------------------------------------ tmux
+
+# Prints the tmux session name for this repo.
+tmux_session() { printf 'crew-%s' "$SLUG"; }
+
+# Succeeds if the crew's tmux session exists.
+tmux_ready() { tmux has-session -t "=$(tmux_session)" 2>/dev/null; }
+
+# Checks tmux is installed and new enough.
+tmux_ensure() {
+  has tmux || die "tmux not found. Install it (apt install tmux / brew install tmux), or set multiplexer = \"herdr\""
+  [ "$(tmux_major_version)" -ge 3 ] 2>/dev/null || die "crew needs tmux 3.0 or newer (you have $(tmux -V))"
+}
+
+# Prints tmux's major version number.
+tmux_major_version() { tmux -V | sed 's/[^0-9]*\([0-9]*\).*/\1/'; }
+
+# Succeeds if the crew session exists.
+tmux_workspace_exists() { tmux_ready; }
+
+# Creates the crew session with the first role's pane, and saves both.
+tmux_create_workspace() {
+  local role="$1" pane
+  pane="$(tmux new-session -d -s "$(tmux_session)" -n agents -x 220 -y 55 -c "$(role_dir "$role")" \
+         -e "CREW_DIR=$CREW" -e "CREW_ROLE=$role" -P -F '#{pane_id}' 2>&1)" || die "could not create tmux session: $pane"
+  state_set ws "$(tmux_session)"
+  state_set "pane:$role" "$pane"
+  ok "tmux session $(tmux_session)"
+}
+
+# Splits a pane (right or down) to make one for a role, and prints the new pane id.
+tmux_split() {
+  local role="$1" from="$2" flag=-v
+  [ "$3" = right ] && flag=-h
+  tmux split-window -d -t "$from" "$flag" -c "$(role_dir "$role")" \
+    -e "CREW_DIR=$CREW" -e "CREW_ROLE=$role" -P -F '#{pane_id}' 2>/dev/null
+}
+
+# Opens a new window and prints its pane id. Pass a role to set the window up for that agent.
+tmux_new_tab() {
+  local label="$1" dir="$2" role="${3:-}"
+  if [ -n "$role" ]; then
+    tmux new-window -d -t "=$(tmux_session):" -n "$label" -c "$dir" \
+      -e "CREW_DIR=$CREW" -e "CREW_ROLE=$role" -P -F '#{pane_id}' 2>/dev/null
+  else
+    tmux new-window -d -t "=$(tmux_session):" -n "$label" -c "$dir" -P -F '#{pane_id}' 2>/dev/null
+  fi
+}
+
+# Succeeds if a pane still exists.
+tmux_pane_exists() { [ -n "$1" ] && tmux display-message -p -t "$1" '#{pane_id}' >/dev/null 2>&1; }
+
+# Types a command into a pane and presses Enter.
+tmux_run() { tmux send-keys -t "$1" -l -- "$2" && tmux send-keys -t "$1" Enter; }
+
+# Starts an agent by typing its command into the pane.
+tmux_start_agent() {
+  local role="$1" pane="$2"
+  shift 2
+  if tmux_run "$pane" "$(quote_words "$@")"; then ok "$role → $1 launched"; else warn "$role: could not launch $1"; fi
+}
+
+# Succeeds if the shell in a role's pane is running a program (the agent).
+tmux_agent_running() {
+  local pane pid
+  pane="$(state_get "pane:$1")"
+  tmux_pane_exists "$pane" || return 1
+  pid="$(tmux display-message -p -t "$pane" '#{pane_pid}' 2>/dev/null)"
+  [ -n "$pid" ] && ps -A -o ppid= | awk -v p="$pid" '$1 == p { found = 1 } END { exit !found }'
+}
+
+# Prints running or stopped. tmux can't tell whether an agent is busy or waiting.
+tmux_agent_status() { if tmux_agent_running "$1"; then echo running; else echo stopped; fi; }
+
+# Pastes a message into a role's agent and presses Enter. Fails if no agent is running there.
+tmux_deliver() {
+  local role="$1" text="$2" pane buffer="crew-$$"
+  tmux_agent_running "$role" || return 1
+  pane="$(state_get "pane:$role")"
+  tmux set-buffer -b "$buffer" -- "$text" &&
+    tmux paste-buffer -p -d -b "$buffer" -t "$pane" &&
+    sleep 0.3 &&
+    tmux send-keys -t "$pane" Enter
+}
+
+# Closes a pane.
+tmux_close_pane() { tmux kill-pane -t "$1" 2>/dev/null; }
+
+# Closes the crew session.
+tmux_close_workspace() { tmux kill-session -t "=$(tmux_session)" 2>/dev/null; }
+
+# Arranges the agents window with the first pane on the left and the rest stacked on the right.
+tmux_finish_layout() {
+  local pane; pane="$(any_live_pane)"
+  [ -n "$pane" ] || return 0
+  tmux set-option -w -t "$pane" main-pane-width 50% 2>/dev/null
+  tmux select-layout -t "$pane" main-vertical >/dev/null 2>&1
+  return 0
+}
+
+# Opens the crew session, or switches to it if we're already inside tmux.
+tmux_attach() {
+  if [ -n "${TMUX:-}" ]; then tmux switch-client -t "=$(tmux_session)"; else exec tmux attach-session -t "=$(tmux_session)"; fi
+}
+
+# ============================================================ worktrees
+
+# Makes sure a role that needs a worktree has one on branch crew/<role>.
+ensure_worktree() {
+  local role="$1" dir
+  role_has_worktree "$role" || return 0
+  dir="$(role_dir "$role")"
+  git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 && return 0
+  create_worktree "$role" "$dir"
+}
+
+# Creates a worktree for a role, reusing its branch if it already exists.
+create_worktree() {
+  local role="$1" dir="$2" branch="crew/$1"
+  mkdir -p "$(dirname "$dir")"
+  git -C "$ROOT" worktree prune >/dev/null 2>&1
+  if git -C "$ROOT" show-ref --verify --quiet "refs/heads/$branch"; then
+    git -C "$ROOT" worktree add -q "$dir" "$branch" || die "could not create worktree for $role"
+  else
+    git -C "$ROOT" worktree add -q -b "$branch" "$dir" "$(base_branch)" || die "could not create worktree for $role"
+  fi
+  ok "worktree $branch → $(tilde "$dir")"
+}
+
+# Removes a role's worktree, but only if it has no uncommitted changes.
+remove_worktree() {
+  local dir
+  role_has_worktree "$1" || return 0
+  dir="$(role_dir "$1")"
+  [ -d "$dir" ] || return 0
+  if git -C "$ROOT" worktree remove "$dir" 2>/dev/null; then ok "removed worktree $(tilde "$dir")"
+  else warn "kept $dir: it has uncommitted changes (commit them, or: git worktree remove --force $dir)"; fi
+}
+
+# ============================================================ building and reviving the crew
+
+# Builds a new workspace: first role on the left, the rest stacked on the right, plus a board tab.
+build_crew() {
+  local roles first r pane right=""
+  roles="$(list_roles)"
+  first="$(printf '%s\n' "$roles" | head -1)"
+  [ -n "$first" ] || die "no roles in .crew/config.toml. Add one with: crew role add <name>"
+  rm -f "$STATE/session"
+  state_set mux "$MUX"
+  mux create_workspace "$first"
+  for r in $(printf '%s\n' "$roles" | tail -n +2); do
+    if [ -z "$right" ]; then pane="$(mux split "$r" "$(state_get "pane:$first")" right)"
+    else pane="$(mux split "$r" "$right" down)"; fi
+    [ -n "$pane" ] && { state_set "pane:$r" "$pane"; right="$pane"; }
+  done
+  mux finish_layout
+  open_board_tab
+  sleep 0.5
+  for r in $roles; do
+    pane="$(state_get "pane:$r")"
+    [ -n "$pane" ] && launch_agent "$r" "$pane"
+  done
+  post_to_board crew all "Crew started: $(printf '%s ' $roles)"
+}
+
+# Relaunches any agent that stopped, recreating its pane if it was closed.
+revive_crew() {
+  local r pane
+  info "crew is already open, reviving anything that stopped"
+  for r in $(list_roles); do
+    if mux agent_running "$r"; then ok "$r is running"; continue; fi
+    pane="$(pane_for_role "$r")" || continue
+    launch_agent "$r" "$pane" revive
+  done
+  mux finish_layout
+}
+
+# Prints a role's pane id, making a new pane if its old one is gone.
+pane_for_role() {
+  local role="$1" pane anchor
+  pane="$(state_get "pane:$role")"
+  mux pane_exists "$pane" && { printf '%s' "$pane"; return 0; }
+  anchor="$(any_live_pane)"
+  if [ -n "$anchor" ]; then pane="$(mux split "$role" "$anchor" down)"
+  else pane="$(mux new_tab agents "$(role_dir "$role")" "$role")"; fi
+  [ -n "$pane" ] || { warn "could not create a pane for $role"; return 1; }
+  state_set "pane:$role" "$pane"
+  sleep 0.5
+  printf '%s' "$pane"
+}
+
+# Prints the pane id of any role whose pane still exists.
+any_live_pane() {
+  local r pane
+  for r in $(list_roles); do
+    pane="$(state_get "pane:$r")"
+    mux pane_exists "$pane" && { printf '%s' "$pane"; return 0; }
+  done
+}
+
+# Opens the board tab, which shows the conversation live.
+open_board_tab() {
+  local pane
+  pane="$(mux new_tab board "$CREW")"
+  [ -n "$pane" ] || return 0
+  state_set board "$pane"
+  sleep 0.5
+  mux run "$pane" "tail -n 40 -F board.md"
+}
+
+# Closes a role's pane and forgets it.
+close_role_pane() {
+  local pane
+  pane="$(state_get "pane:$1")"
+  [ -n "$pane" ] && mux pane_exists "$pane" && mux close_pane "$pane"
+  state_set "pane:$1" ""
+}
+
+# ============================================================ messaging
+
+# Appends a message to the board.
+post_to_board() {
+  printf '### %s  %s → %s\n%s\n\n' "$(date '+%Y-%m-%d %H:%M')" "$1" "$2" "$3" >> "$CREW/board.md"
+}
+
+# Prints the text an agent sees for a message, shortened if long.
+message_text() {
+  local from="$1" msg="$2"
+  [ ${#msg} -gt 600 ] && msg="$(printf '%s' "$msg" | cut -c1-600)… (full message in $CREW/board.md)"
+  if [ "$from" = human ]; then printf '[crew] from the human: %s' "$msg"
+  else printf '[crew] from %s: %s  (reply with: crew say %s "...")' "$from" "$msg" "$from"; fi
+}
+
+# Prints who should receive a message: one role, or everyone but the sender.
+recipients() {
+  if [ "$1" = all ]; then list_roles | grep -vx "$2"; else printf '%s\n' "$1"; fi
+}
+
+# ============================================================ files crew writes
+
+# Prints the top of a new repo config.
+repo_config_header() {
+  cat <<EOF
+# crew settings for this repo. Anything here overrides $(tilde "$GLOBAL_CONFIG").
+# Run "crew config" to see the settings in effect.
+
+base_branch = "$1"
+
+# multiplexer = "tmux"   # uncomment to use a different multiplexer for this repo
+EOF
+}
+
+# Prints the starter roles: lead, builder, reviewer, using whichever agents are installed.
+default_roles() {
+  printf '\n[roles.lead]\nagent = "%s"\nworktree = false\n' "$(first_installed claude codex gemini)"
+  printf '\n[roles.builder]\nagent = "%s"\nworktree = true\n' "$(first_installed codex claude gemini)"
+  printf '\n[roles.reviewer]\nagent = "%s"\nworktree = true\n' "$(first_installed gemini claude codex)"
+}
+
+# Succeeds if the global config defines any roles.
+global_has_roles() { toml_flatten "$GLOBAL_CONFIG" | grep -q "^@	roles\."; }
+
+# Writes .crew/config.toml, taking roles from your global config if it has any.
+write_repo_config() {
+  local base
+  base="$(git -C "$ROOT" symbolic-ref --short HEAD 2>/dev/null || git -C "$ROOT" rev-parse --short HEAD)"
+  {
+    repo_config_header "$base"
+    if global_has_roles; then printf '\n'; toml_filter "$GLOBAL_CONFIG" keep '^roles\.'
+    else
+      has claude || has codex || has gemini || warn "none of claude, codex or gemini found. Edit .crew/config.toml"
+      default_roles
+    fi
+  } > "$CREW/config.toml"
+}
+
+# Prints a starter global config with every setting explained.
+global_config_template() {
+  cat <<'EOF'
+# crew global settings. Applies to every repo; a repo's .crew/config.toml overrides anything here.
+
+# Which terminal multiplexer runs the agents: "herdr" or "tmux".
+# herdr shows each agent's state (working, blocked, done) and can tell when one is busy.
+# tmux works anywhere but can only tell whether an agent is running.
+multiplexer = "herdr"
+
+# Where agent worktrees are created. Each repo gets its own folder inside.
+worktree_dir = "~/.crew/worktrees"
+
+# How each agent is launched. Placeholders:
+#   {crew}   the shared .crew folder (agents need access to it)
+#   {repo}   the repo's main folder
+#   {role}   the role name
+#   {prompt} the kickoff prompt; if you leave it out, it's added as the last argument
+# kind (herdr only): which herdr agent kind to use. Set kind = "" to have herdr
+# type your exact command instead, e.g. for a wrapper script or a custom CLI.
+
+[agents.claude]
+command = "claude --add-dir {crew}"
+
+[agents.codex]
+command = "codex --add-dir {crew}"
+
+[agents.gemini]
+command = "gemini --include-directories {crew} -i"
+
+# Any other CLI works too:
+# [agents.mytool]
+# command = "mytool --workspace {crew} --message {prompt}"
+# kind = ""
+
+# Default roles for new repos. "crew setup" copies these into .crew/config.toml.
+# "crew role save" (no name) replaces them with the current repo's roles.
+# [roles.lead]
+# agent = "claude"
+# worktree = false
+EOF
+}
+
+# Creates a role file for every role that doesn't have one yet.
+write_role_files() {
+  local r
+  for r in $(list_roles); do
+    [ -f "$CREW/roles/$r.md" ] || role_template "$r" > "$CREW/roles/$r.md"
+  done
+}
+
+# Creates an empty board and task list.
+write_shared_files() {
+  [ -f "$CREW/board.md" ] || printf '# Crew board\n\n' > "$CREW/board.md"
+  [ -f "$CREW/tasks.md" ] || printf '# Tasks\n\n| task | owner | status | notes |\n|------|-------|--------|-------|\n' > "$CREW/tasks.md"
+}
+
+# Adds .crew/ to this clone's private git ignore list (.git/info/exclude).
+hide_from_git() {
+  local exclude
+  exclude="$(cd "$ROOT" && git rev-parse --git-path info/exclude)"
+  case "$exclude" in /*) ;; *) exclude="$ROOT/$exclude" ;; esac
+  mkdir -p "$(dirname "$exclude")"
+  grep -qxF '.crew/' "$exclude" 2>/dev/null || echo '.crew/' >> "$exclude"
+}
+
+# Writes PROTOCOL.md: the shared rules plus the current team table.
+write_protocol() {
+  { protocol_header; protocol_team; protocol_rules; } > "$CREW/PROTOCOL.md"
+}
+
+# Prints the protocol's opening lines.
+protocol_header() {
+  cat <<EOF
+# Crew protocol (generated by \`crew\`; edit roles/*.md instead)
+
+You are one agent in a crew working on the repo at \`$ROOT\`.
+Shared crew folder: \`$CREW\`  (board.md, tasks.md, notes/, roles/)
+Base branch: \`$(base_branch)\`
+
+EOF
+}
+
+# Prints a table of every role, its agent, branch and folder.
+protocol_team() {
+  local r branch
+  printf '## Team\n| role | agent | branch | works in |\n|------|-------|--------|----------|\n'
+  for r in $(list_roles); do
+    if role_has_worktree "$r"; then branch="crew/$r"; else branch="$(base_branch) (main checkout)"; fi
+    printf '| %s | %s | %s | %s |\n' "$r" "$(role_agent "$r")" "$branch" "$(role_dir "$r")"
+  done
+}
+
+# Prints the rules every agent follows.
+protocol_rules() {
+  cat <<'EOF'
+
+## Rules
+1. On start, read your role file (roles/<you>.md), then board.md and tasks.md.
+   Re-read board.md and tasks.md before starting each new piece of work.
+2. Talk to teammates ONLY with the shell command:
+       crew say <role|all|human> "message"
+   It appends to board.md and pops the message into their session. Never edit board.md by hand.
+3. Messages from teammates arrive in your prompt starting with `[crew]`. Act on them, then continue.
+4. Do not send acknowledgement-only messages ("ok", "thanks", "got it"). Only message when you
+   need something, hand something over, or report a result. This keeps the crew from looping.
+5. Share code through git: commit to your own branch; others read it with
+   `git log` / `git diff <base>...crew/<role>`. Only the lead merges into the base branch.
+6. tasks.md is the source of truth for who is doing what. Update your task's status when it changes.
+7. Before you stop, or when your context is getting long, write a short handoff to
+   notes/<you>.md: what you finished, what is in progress, what is next. A restarted
+   you will read it.
+8. If you are blocked, say so immediately with `crew say lead "blocked: ..."` rather than waiting.
+EOF
 }
 
 # ============================================================ role templates
@@ -229,398 +943,38 @@ and who it hands work to. Edit with: crew role edit $1
 EOF
 }
 
-# ============================================================ protocol
-
-# Writes PROTOCOL.md: the shared rules plus the current team table.
-write_protocol() {
-  { protocol_header; protocol_team; protocol_rules; } > "$CREW/PROTOCOL.md"
-}
-
-# Prints the protocol's opening lines.
-protocol_header() {
-  cat <<EOF
-# Crew protocol (generated by \`crew\`; edit roles/*.md instead)
-
-You are one agent in a crew working on the repo at \`$ROOT\`.
-Shared crew folder: \`$CREW\`  (board.md, tasks.md, notes/, roles/)
-Base branch: \`$(base_branch)\`
-
-EOF
-}
-
-# Prints a table of every role, its agent, branch and folder.
-protocol_team() {
-  local r branch
-  printf '## Team\n| role | agent | branch | works in |\n|------|-------|--------|----------|\n'
-  for r in $(list_roles); do
-    if [ "$(role_worktree "$r")" = yes ]; then branch="crew/$r"; else branch="$(base_branch) (main checkout)"; fi
-    printf '| %s | %s | %s | %s |\n' "$r" "$(role_agent "$r")" "$branch" "$(role_dir "$r")"
-  done
-}
-
-# Prints the rules every agent follows.
-protocol_rules() {
-  cat <<'EOF'
-
-## Rules
-1. On start, read your role file (roles/<you>.md), then board.md and tasks.md.
-   Re-read board.md and tasks.md before starting each new piece of work.
-2. Talk to teammates ONLY with the shell command:
-       crew say <role|all|human> "message"
-   It appends to board.md and pops the message into their session. Never edit board.md by hand.
-3. Messages from teammates arrive in your prompt starting with `[crew]`. Act on them, then continue.
-4. Do not send acknowledgement-only messages ("ok", "thanks", "got it"). Only message when you
-   need something, hand something over, or report a result. This keeps the crew from looping.
-5. Share code through git: commit to your own branch; others read it with
-   `git log` / `git diff <base>...crew/<role>`. Only the lead merges into the base branch.
-6. tasks.md is the source of truth for who is doing what. Update your task's status when it changes.
-7. Before you stop, or when your context is getting long, write a short handoff to
-   notes/<you>.md: what you finished, what is in progress, what is next. A restarted
-   you will read it.
-8. If you are blocked, say so immediately with `crew say lead "blocked: ..."` rather than waiting.
-EOF
-}
-
-# ============================================================ herdr
-
-# Succeeds if a herdr server is answering.
-herdr_running() { herdr workspace list >/dev/null 2>&1; }
-
-# Starts a background herdr server if none is running, and waits for it.
-ensure_herdr() {
-  local i=0
-  herdr_running && return 0
-  info "starting herdr server in the background"
-  mkdir -p "$STATE"
-  nohup herdr server > "$STATE/herdr-server.log" 2>&1 &
-  while [ $i -lt 40 ]; do herdr_running && return 0; sleep 0.25; i=$((i + 1)); done
-  die "herdr server did not start (see $STATE/herdr-server.log)"
-}
-
-# Succeeds if the saved crew workspace still exists in herdr.
-workspace_exists() { local ws; ws="$(state_get ws)"; [ -n "$ws" ] && herdr workspace get "$ws" >/dev/null 2>&1; }
-
-# Succeeds if a pane id still exists in herdr.
-pane_exists() { [ -n "$1" ] && herdr pane get "$1" >/dev/null 2>&1; }
-
-# Succeeds if a role's agent is running.
-agent_running() { herdr agent get "$(agent_name "$1")" >/dev/null 2>&1; }
-
-# Creates the crew workspace with the first role's pane, and saves both ids.
-create_workspace() {
-  local role="$1" out ws pane tab
-  out="$(herdr workspace create --cwd "$(role_dir "$role")" --label "crew:$SLUG" \
-        --env "CREW_DIR=$CREW" --env "CREW_ROLE=$role" --no-focus 2>&1)" || die "could not create workspace: $out"
-  ws="$(printf '%s' "$out" | json_get '.result.workspace.workspace_id')"
-  pane="$(printf '%s' "$out" | json_get '.result.root_pane.pane_id')"
-  tab="$(printf '%s' "$out" | json_get '.result.tab.tab_id')"
-  [ -n "$ws" ] && [ -n "$pane" ] || die "unexpected herdr response: $out"
-  herdr tab rename "$tab" agents >/dev/null 2>&1
-  state_set ws "$ws"
-  state_set "pane:$role" "$pane"
-  ok "herdr workspace crew:$SLUG ($ws)"
-}
-
-# Splits a pane to make one for a role, and prints the new pane id.
-split_pane() {
-  local role="$1" from="$2" direction="$3" out
-  out="$(herdr pane split "$from" --direction "$direction" --cwd "$(role_dir "$role")" \
-        --env "CREW_DIR=$CREW" --env "CREW_ROLE=$role" --no-focus 2>&1)" || { warn "split failed: $out"; return 1; }
-  printf '%s' "$out" | json_get '.result.pane.pane_id'
-}
-
-# Opens a new tab in the crew workspace and prints its pane id. Pass a role to set up the tab for that agent.
-new_tab() {
-  local label="$1" dir="$2" role="${3:-}" out
-  if [ -n "$role" ]; then
-    out="$(herdr tab create --workspace "$(state_get ws)" --cwd "$dir" --label "$label" \
-          --env "CREW_DIR=$CREW" --env "CREW_ROLE=$role" --no-focus 2>&1)"
-  else
-    out="$(herdr tab create --workspace "$(state_get ws)" --cwd "$dir" --label "$label" --no-focus 2>&1)"
-  fi
-  printf '%s' "$out" | json_get '.result.root_pane.pane_id'
-}
-
-# Opens the board tab, which shows the conversation live.
-open_board_tab() {
-  local pane
-  pane="$(new_tab board "$CREW")"
-  [ -n "$pane" ] || return 0
-  state_set board "$pane"
-  sleep 0.5
-  herdr pane run "$pane" "tail -n 40 -F board.md" >/dev/null 2>&1
-}
-
-# ============================================================ worktrees
-
-# Makes sure a role that needs a worktree has one on branch crew/<role>.
-ensure_worktree() {
-  local role="$1" dir
-  [ "$(role_worktree "$role")" = yes ] || return 0
-  dir="$(role_dir "$role")"
-  git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 && return 0
-  create_worktree "$role" "$dir"
-}
-
-# Creates a worktree for a role, reusing its branch if it already exists.
-create_worktree() {
-  local role="$1" dir="$2" branch="crew/$1"
-  mkdir -p "$(dirname "$dir")"
-  git -C "$ROOT" worktree prune >/dev/null 2>&1
-  if git -C "$ROOT" show-ref --verify --quiet "refs/heads/$branch"; then
-    git -C "$ROOT" worktree add -q "$dir" "$branch" || die "could not create worktree for $role"
-  else
-    git -C "$ROOT" worktree add -q -b "$branch" "$dir" "$(base_branch)" || die "could not create worktree for $role"
-  fi
-  ok "worktree $branch → $dir"
-}
-
-# ============================================================ launching agents
-
-# Prints the first message an agent receives, telling it where its instructions are.
-kickoff_prompt() {
-  local role="$1" mode="${2:-}" msg
-  msg="You are the $role agent in a multi-agent crew. Read $CREW/PROTOCOL.md and $CREW/roles/$role.md now and follow them, then read $CREW/board.md and $CREW/tasks.md."
-  if [ "$mode" = revive ]; then
-    msg="$msg You were restarted: also read $CREW/notes/$role.md for your own handoff and continue from there."
-  elif [ "$role" = lead ]; then
-    msg="$msg Then briefly greet the human and ask what the crew should work on."
-  fi
-  printf '%s' "$msg"
-}
-
-# Prints an agent's command-line arguments, one per line: access to .crew plus the kickoff prompt.
-agent_args() {
-  local agent="$1" prompt="$2"
-  case "$agent" in
-    claude|codex) printf '%s\n' --add-dir "$CREW" "$prompt" ;;
-    gemini)       printf '%s\n' --include-directories "$CREW" -i "$prompt" ;;
-    *)            printf '%s\n' "$prompt" ;;
-  esac
-}
-
-# Succeeds if herdr knows how to start this agent itself.
-herdr_knows() { case "$HERDR_KINDS" in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
-
-# Starts a role's agent in a pane.
-launch_agent() {
-  local role="$1" pane="$2" mode="${3:-}" agent line args=()
-  agent="$(role_agent "$role")"
-  has "$agent" || { warn "$role: '$agent' is not installed, pane left as a shell"; return 1; }
-  while IFS= read -r line; do args+=("$line"); done <<EOF
-$(agent_args "$agent" "$(kickoff_prompt "$role" "$mode")")
-EOF
-  if herdr_knows "$agent"; then
-    start_with_herdr "$role" "$agent" "$pane" "${args[@]}"
-  else
-    type_into_pane "$role" "$agent" "$pane" "${args[@]}"
-  fi
-}
-
-# Starts an agent through herdr so it gets a name and status tracking. Retries while the shell starts up.
-start_with_herdr() {
-  local role="$1" agent="$2" pane="$3" out tries=0
-  shift 3
-  while [ $tries -lt 4 ]; do
-    out="$(herdr agent start "$(agent_name "$role")" --kind "$agent" --pane "$pane" --timeout 25000 -- "$@" 2>&1)" &&
-      { ok "$role → $agent ready"; return 0; }
-    case "$out" in
-      *agent_not_ready*) ok "$role → $agent started (approve the prompt in its pane)"; return 0 ;;
-      *timeout*)         ok "$role → $agent started (busy with its kickoff)"; return 0 ;;
-    esac
-    tries=$((tries + 1)); sleep 1
-  done
-  warn "$role: herdr agent start failed: $(printf '%s' "$out" | head -c 300)"
-  return 1
-}
-
-# Starts an agent herdr doesn't know by typing its command into the pane.
-type_into_pane() {
-  local role="$1" agent="$2" pane="$3" cmd a
-  shift 3
-  cmd="$agent"
-  for a in "$@"; do cmd="$cmd $(printf '%q' "$a")"; done
-  if herdr pane run "$pane" "$cmd" >/dev/null 2>&1; then ok "$role → $agent launched"; else warn "$role: could not launch $agent"; fi
-}
-
-# ============================================================ building and reviving the crew
-
-# Builds a new workspace: first role on the left, the rest stacked on the right, plus a board tab.
-build_crew() {
-  local roles first r pane right=""
-  roles="$(list_roles)"
-  first="$(printf '%s\n' "$roles" | head -1)"
-  [ -n "$first" ] || die "no roles in $CREW/crew.conf"
-  rm -f "$STATE/session"
-  create_workspace "$first"
-  for r in $(printf '%s\n' "$roles" | tail -n +2); do
-    if [ -z "$right" ]; then pane="$(split_pane "$r" "$(state_get "pane:$first")" right)"
-    else pane="$(split_pane "$r" "$right" down)"; fi
-    [ -n "$pane" ] && { state_set "pane:$r" "$pane"; right="$pane"; }
-  done
-  open_board_tab
-  sleep 0.5
-  for r in $roles; do
-    pane="$(state_get "pane:$r")"
-    [ -n "$pane" ] && launch_agent "$r" "$pane"
-  done
-  post_to_board crew all "Crew started: $(printf '%s ' $roles)"
-}
-
-# Relaunches any agent that stopped, recreating its pane if it was closed.
-revive_crew() {
-  local r pane
-  info "crew workspace exists, reviving anything that stopped"
-  for r in $(list_roles); do
-    if agent_running "$r"; then ok "$r is running"; continue; fi
-    pane="$(pane_for_role "$r")" || continue
-    launch_agent "$r" "$pane" revive
-  done
-}
-
-# Prints a role's pane id, making a new pane if its old one is gone.
-pane_for_role() {
-  local role="$1" pane anchor
-  pane="$(state_get "pane:$role")"
-  pane_exists "$pane" && { printf '%s' "$pane"; return 0; }
-  anchor="$(any_live_pane)"
-  if [ -n "$anchor" ]; then pane="$(split_pane "$role" "$anchor" down)"
-  else pane="$(new_tab agents "$(role_dir "$role")" "$role")"; fi
-  [ -n "$pane" ] || { warn "could not create a pane for $role"; return 1; }
-  state_set "pane:$role" "$pane"
-  sleep 0.5
-  printf '%s' "$pane"
-}
-
-# Prints the pane id of any role whose pane still exists.
-any_live_pane() {
-  local r pane
-  for r in $(list_roles); do
-    pane="$(state_get "pane:$r")"
-    pane_exists "$pane" && { printf '%s' "$pane"; return 0; }
-  done
-}
-
-# Opens herdr on the crew workspace, unless we're already inside herdr.
-attach_to_crew() {
-  herdr workspace focus "$(state_get ws)" >/dev/null 2>&1
-  if [ "${HERDR_ENV:-}" = 1 ]; then info "already inside herdr, switched to crew:$SLUG"
-  else exec herdr; fi
-}
-
-# ============================================================ messaging
-
-# Appends a message to the board.
-post_to_board() {
-  printf '### %s  %s → %s\n%s\n\n' "$(date '+%Y-%m-%d %H:%M')" "$1" "$2" "$3" >> "$CREW/board.md"
-}
-
-# Types a message into a role's agent session. Fails if the agent can't take it right now.
-deliver() {
-  local role="$1" text="$2" pane
-  herdr agent prompt "$(agent_name "$role")" "$text" >/dev/null 2>&1 && return 0
-  pane="$(state_get "pane:$role")"
-  [ -n "$pane" ] && herdr agent prompt "$pane" "$text" >/dev/null 2>&1
-}
-
-# Prints the text an agent sees for a message, shortened if long.
-message_text() {
-  local from="$1" msg="$2"
-  [ ${#msg} -gt 600 ] && msg="$(printf '%s' "$msg" | cut -c1-600)… (full message in $CREW/board.md)"
-  if [ "$from" = human ]; then printf '[crew] from the human: %s' "$msg"
-  else printf '[crew] from %s: %s  (reply with: crew say %s "...")' "$from" "$msg" "$from"; fi
-}
-
-# Prints who should receive a message: one role, or everyone but the sender.
-recipients() {
-  if [ "$1" = all ]; then list_roles | grep -vx "$2"; else printf '%s\n' "$1"; fi
-}
-
 # ============================================================ commands: setup and lifecycle
 
-# crew setup: creates .crew/ with a roster, role files, board and tasks.
+# crew setup: creates .crew/ with a config, role files, board and tasks.
 cmd_setup() {
   load_context
   git -C "$ROOT" rev-parse --verify -q HEAD >/dev/null || die "this repo has no commits yet. Make one first."
-  if [ -f "$CREW/crew.conf" ]; then info "crew already set up in $CREW"; write_protocol; return 0; fi
+  if [ -f "$CREW/config.toml" ]; then info "crew already set up in $CREW"; write_protocol; return 0; fi
   mkdir -p "$CREW/roles" "$CREW/notes" "$STATE"
-  save_base_branch
-  write_roster
+  write_repo_config
+  load_config
   write_role_files
   write_shared_files
   write_protocol
   hide_from_git
-  ok "crew set up in $CREW"
+  ok "crew set up in $CREW (multiplexer: $MUX)"
   printf '\n'; role_list
-  printf '\n%sNext:%s crew start   %s(customise first with crew role edit / crew role add)%s\n' "$BOLD" "$RESET" "$DIM" "$RESET"
+  printf '\n%sNext:%s crew start   %s(customise first with crew role edit / crew role add / crew config edit)%s\n' "$BOLD" "$RESET" "$DIM" "$RESET"
 }
 
-# Records the current branch as the one the crew merges into.
-save_base_branch() {
-  git -C "$ROOT" symbolic-ref --short HEAD > "$CREW/base" 2>/dev/null ||
-    git -C "$ROOT" rev-parse --short HEAD > "$CREW/base"
-}
-
-# Writes crew.conf from your saved default, or picks agents from what's installed.
-write_roster() {
-  if [ -f "$CREW_HOME/crew.conf" ]; then
-    cp "$CREW_HOME/crew.conf" "$CREW/crew.conf"
-    info "using your default roster from $CREW_HOME/crew.conf"
-    return
-  fi
-  has claude || has codex || has gemini || warn "none of claude, codex or gemini found. Edit .crew/crew.conf"
-  {
-    echo "# crew roster: <role> <agent> <worktree yes|no>"
-    echo "# Change with: crew role set <role> agent=<claude|codex|gemini> worktree=<yes|no>"
-    printf 'lead     %s no\n'  "$(first_installed claude codex gemini)"
-    printf 'builder  %s yes\n' "$(first_installed codex claude gemini)"
-    printf 'reviewer %s yes\n' "$(first_installed gemini claude codex)"
-  } > "$CREW/crew.conf"
-}
-
-# Prints the first agent in the list that's installed, or the first one if none are.
-first_installed() {
-  local a
-  for a in "$@"; do has "$a" && { echo "$a"; return; }; done
-  echo "$1"
-}
-
-# Creates a role file for every role that doesn't have one yet.
-write_role_files() {
-  local r
-  for r in $(list_roles); do
-    [ -f "$CREW/roles/$r.md" ] || role_template "$r" > "$CREW/roles/$r.md"
-  done
-}
-
-# Creates an empty board and task list.
-write_shared_files() {
-  [ -f "$CREW/board.md" ] || printf '# Crew board\n\n' > "$CREW/board.md"
-  [ -f "$CREW/tasks.md" ] || printf '# Tasks\n\n| task | owner | status | notes |\n|------|-------|--------|-------|\n' > "$CREW/tasks.md"
-}
-
-# Adds .crew/ to this clone's private git ignore list (.git/info/exclude).
-hide_from_git() {
-  local exclude
-  exclude="$(cd "$ROOT" && git rev-parse --git-path info/exclude)"
-  case "$exclude" in /*) ;; *) exclude="$ROOT/$exclude" ;; esac
-  mkdir -p "$(dirname "$exclude")"
-  grep -qxF '.crew/' "$exclude" 2>/dev/null || echo '.crew/' >> "$exclude"
-}
-
-# crew start: sets up if needed, starts or revives every agent, then opens herdr.
+# crew start: sets up if needed, starts or revives every agent, then opens the multiplexer.
 cmd_start() {
   local attach=yes r
   [ "${1:-}" = --no-attach ] && attach=no
   load_context
-  has herdr || die "herdr not found. Install it from https://herdr.dev"
-  [ -f "$CREW/crew.conf" ] || cmd_setup >/dev/null
+  [ -f "$CREW/config.toml" ] || cmd_setup >/dev/null
+  mux ensure
+  forget_other_mux_state
   write_protocol
-  ensure_herdr
   for r in $(list_roles); do ensure_worktree "$r"; done
-  if workspace_exists; then revive_crew; else build_crew; fi
+  if mux workspace_exists; then revive_crew; else build_crew; fi
   printf '\n%sCrew is up.%s Talk to the lead in its pane, or run: %screw say lead "..."%s\n' "$BOLD" "$RESET" "$BOLD" "$RESET"
-  [ "$attach" = yes ] && [ -t 1 ] && attach_to_crew
+  [ "$attach" = yes ] && [ -t 1 ] && mux attach
   return 0
 }
 
@@ -631,24 +985,15 @@ cmd_restart() {
   [ $# -ge 1 ] || die "usage: crew restart <role|all>"
   if [ "$1" = all ]; then targets="$(list_roles)"
   else role_exists "$1" || die "no role '$1'"; targets="$1"; fi
+  mux ensure
   for r in $targets; do close_role_pane "$r"; done
   cmd_start --no-attach
 }
 
-# Closes a role's pane and forgets it.
-close_role_pane() {
-  local pane
-  pane="$(state_get "pane:$1")"
-  [ -n "$pane" ] && herdr_running && herdr pane close "$pane" >/dev/null 2>&1
-  state_set "pane:$1" ""
-}
-
-# crew stop: closes the herdr workspace. Files and worktrees stay.
+# crew stop: closes the workspace. Files and worktrees stay.
 cmd_stop() {
-  local ws
   load_context; require_crew
-  ws="$(state_get ws)"
-  [ -n "$ws" ] && herdr_running && herdr workspace close "$ws" >/dev/null 2>&1 && ok "closed herdr workspace $ws"
+  mux workspace_exists 2>/dev/null && mux close_workspace && ok "closed the crew's $MUX workspace"
   rm -f "$STATE/session"
   info "board, tasks, notes and worktrees are kept. crew start brings everyone back."
 }
@@ -664,16 +1009,6 @@ cmd_teardown() {
   for r in $(list_roles); do remove_worktree "$r"; done
 }
 
-# Removes a role's worktree, but only if it has no uncommitted changes.
-remove_worktree() {
-  local dir
-  [ "$(role_worktree "$1")" = yes ] || return 0
-  dir="$(role_dir "$1")"
-  [ -d "$dir" ] || return 0
-  if git -C "$ROOT" worktree remove "$dir" 2>/dev/null; then ok "removed worktree $dir"
-  else warn "kept $dir: it has uncommitted changes (commit them, or: git worktree remove --force $dir)"; fi
-}
-
 # ============================================================ commands: talking and status
 
 # crew say <role|all|human> "msg": posts to the board and types it into the recipients' sessions.
@@ -685,13 +1020,13 @@ cmd_say() {
   [ "$to" = all ] || [ "$to" = human ] || role_exists "$to" || die "no role '$to' (roles: $(list_roles | tr '\n' ' '))"
   post_to_board "$from" "$to" "$msg"
   [ "$to" = human ] && { ok "posted for the human"; return 0; }
-  herdr_running || { ok "posted to board (herdr not running, not delivered live)"; return 0; }
+  has "$MUX" && mux ready || { ok "posted to board (crew not running, not delivered live)"; return 0; }
   text="$(message_text "$from" "$msg")"
   for r in $(recipients "$to" "$from"); do
-    if deliver "$r" "$text"; then delivered=$((delivered + 1)); else missed="$missed $r"; fi
+    if mux deliver "$r" "$text"; then delivered=$((delivered + 1)); else missed="$missed $r"; fi
   done
   ok "posted to board, delivered to $delivered agent(s)"
-  [ -n "$missed" ] && warn "not delivered live to:$missed (busy on a prompt or not running). It's on the board."
+  [ -n "$missed" ] && warn "not delivered live to:$missed (busy or not running). It's on the board."
   return 0
 }
 
@@ -707,28 +1042,104 @@ cmd_status() {
   load_context; require_crew
   printf '%s%-10s %-8s %-10s %s%s\n' "$BOLD" ROLE AGENT STATUS "WORKS IN" "$RESET"
   for r in $(list_roles); do
-    printf '%-10s %-8s %-10s %s\n' "$r" "$(role_agent "$r")" "$(agent_status "$r")" "$(role_dir "$r")"
+    printf '%-10s %-8s %-10s %s\n' "$r" "$(role_agent "$r")" "$(role_status "$r")" "$(tilde "$(role_dir "$r")")"
   done
 }
 
-# Prints a role's agent state from herdr: working, idle, blocked, done, or stopped.
-agent_status() {
-  local s
-  herdr_running || { echo "-"; return; }
-  s="$(herdr agent get "$(agent_name "$1")" 2>/dev/null | json_get '.result.agent.agent_status')"
-  echo "${s:-stopped}"
+# Prints a role's state, or - if the crew isn't running.
+role_status() {
+  has "$MUX" && mux ready || { echo "-"; return; }
+  mux agent_status "$1"
 }
 
 # crew doctor: checks that everything crew needs is installed.
 cmd_doctor() {
-  local a fine=1
-  for a in git herdr; do if has "$a"; then ok "$a found"; else warn "$a missing"; fine=0; fi; done
-  if has jq || has python3; then ok "json reader found"; else warn "install jq"; fine=0; fi
-  for a in claude codex gemini; do if has "$a"; then ok "agent $a found"; else info "agent $a not installed"; fi; done
-  if has herdr; then
-    if herdr_running; then ok "herdr server running"; else info "herdr server not running (crew start launches it)"; fi
+  local fine=1 a
+  if repo_root >/dev/null; then load_context; else CREW=""; ROOT=""; SLUG=""; load_config; fi
+  if has git; then ok "git found"; else warn "git missing"; fine=0; fi
+  info "multiplexer: $MUX"
+  if [ "$MUX" = herdr ]; then
+    if has herdr; then ok "herdr found"; else warn "herdr missing (https://herdr.dev)"; fine=0; fi
+    if has jq || has python3; then ok "json reader found"; else warn "herdr support needs jq. Install it."; fine=0; fi
+  else
+    if has tmux; then ok "$(tmux -V) found"; else warn "tmux missing"; fine=0; fi
+    has tmux && { [ "$(tmux_major_version)" -ge 3 ] 2>/dev/null || { warn "tmux 3.0 or newer needed"; fine=0; }; }
   fi
+  for a in $(doctor_agents); do
+    if has "$a"; then ok "agent $a found"; else warn "agent $a not installed"; fi
+  done
+  info "global config: $(tilde "$GLOBAL_CONFIG")$([ -f "$GLOBAL_CONFIG" ] || echo ' (not created; crew config edit --global)')"
   [ $fine = 1 ]
+}
+
+# Prints the agent executables to check: the ones this repo's roles use, or the usual three.
+doctor_agents() {
+  local r
+  if [ -n "${CREW:-}" ] && [ -f "$CREW/config.toml" ]; then
+    for r in $(list_roles); do agent_words "$r" | head -1; done | sort -u
+  else
+    echo claude codex gemini
+  fi
+}
+
+# ============================================================ commands: config
+
+# crew config [init | example | edit [--global]]: shows the settings in effect, or creates or opens a config file.
+cmd_config() {
+  case "${1:-}" in
+    init)    config_init; return ;;
+    example) global_config_template; return ;;
+  esac
+  if [ "${1:-}" = edit ] && [ "${2:-}" = --global ]; then edit_global_config; return; fi
+  load_context; require_crew
+  case "${1:-show}" in
+    show) config_show ;;
+    edit) ${VISUAL:-${EDITOR:-vi}} "$CREW/config.toml"; load_config; write_protocol ;;
+    *)    die "usage: crew config [edit [--global]]" ;;
+  esac
+}
+
+# Opens the global config, creating it with explanations first if needed.
+edit_global_config() {
+  [ -f "$GLOBAL_CONFIG" ] || write_global_config
+  ${VISUAL:-${EDITOR:-vi}} "$GLOBAL_CONFIG"
+}
+
+# Writes the starter global config, choosing herdr or tmux by what's installed.
+write_global_config() {
+  local mux
+  mux="$(detect_multiplexer)"
+  mkdir -p "$CREW_HOME"
+  global_config_template | sed "s/^multiplexer = \"herdr\"/multiplexer = \"$mux\"/" > "$GLOBAL_CONFIG"
+  ok "created $(tilde "$GLOBAL_CONFIG") (multiplexer: $mux)"
+}
+
+# Prints herdr if it's installed, otherwise tmux if that is, otherwise herdr.
+detect_multiplexer() {
+  if has herdr; then echo herdr; elif has tmux; then echo tmux; else echo herdr; fi
+}
+
+# crew config init: creates the global config if it doesn't exist yet. Used by install.sh.
+config_init() {
+  if [ -f "$GLOBAL_CONFIG" ]; then info "$(tilde "$GLOBAL_CONFIG") already exists, left unchanged"; return 0; fi
+  write_global_config
+}
+
+# Prints the config files and the settings in effect for this repo.
+config_show() {
+  local r a
+  printf '%sConfig files%s\n' "$BOLD" "$RESET"
+  printf '  global  %s%s\n' "$(tilde "$GLOBAL_CONFIG")" "$([ -f "$GLOBAL_CONFIG" ] || echo '  (not created; crew config edit --global)')"
+  printf '  repo    .crew/config.toml\n\n'
+  printf '%sSettings%s\n' "$BOLD" "$RESET"
+  printf '  multiplexer   %s\n  worktree_dir  %s\n  base_branch   %s\n\n' "$MUX" "$(cfg worktree_dir "~/.crew/worktrees")" "$(base_branch)"
+  printf '%sAgents in use%s\n' "$BOLD" "$RESET"
+  for a in $(for r in $(list_roles); do role_agent "$r"; echo; done | sort -u); do
+    printf '  %-8s %s' "$a" "$(agent_command "$a")"
+    [ "$MUX" = herdr ] && printf '   (herdr kind: %s)' "$(agent_kind "$a" | sed 's/^$/none, typed in/')"
+    printf '\n'
+  done
+  printf '\n'; role_list
 }
 
 # ============================================================ commands: roles
@@ -750,12 +1161,13 @@ cmd_role() {
   esac
 }
 
-# Prints the roster as a table.
+# Prints the roles as a table.
 role_list() {
-  local r
+  local r wt
   printf '%s%-10s %-8s %-9s %s%s\n' "$BOLD" ROLE AGENT WORKTREE "ROLE FILE" "$RESET"
   for r in $(list_roles); do
-    printf '%-10s %-8s %-9s %s\n' "$r" "$(role_agent "$r")" "$(role_worktree "$r")" ".crew/roles/$r.md"
+    if role_has_worktree "$r"; then wt=yes; else wt=no; fi
+    printf '%-10s %-8s %-9s %s\n' "$r" "$(role_agent "$r")" "$wt" ".crew/roles/$r.md"
   done
 }
 
@@ -767,7 +1179,7 @@ role_show() {
 
 # Adds a role. Options: --agent <name>, --no-worktree, --like <existing role>.
 role_add() {
-  local role="${1:-}" agent="" worktree=yes like=""
+  local role="${1:-}" agent="" worktree=true like=""
   valid_role_name "$role" || die "usage: crew role add <name> [--agent a] [--no-worktree] [--like role]  (a-z0-9-, max 15)"
   role_exists "$role" && die "role '$role' already exists"
   shift
@@ -775,15 +1187,17 @@ role_add() {
     case "$1" in
       --agent)       agent="$2"; shift 2 ;;
       --agent=*)     agent="${1#*=}"; shift ;;
-      --no-worktree) worktree=no; shift ;;
-      --worktree)    worktree=yes; shift ;;
+      --no-worktree) worktree=false; shift ;;
+      --worktree)    worktree=true; shift ;;
       --like)        like="$2"; shift 2 ;;
       --like=*)      like="${1#*=}"; shift ;;
       *)             die "unknown option $1" ;;
     esac
   done
   [ -n "$agent" ] || agent="$(first_installed claude codex gemini)"
-  roster_add "$role" "$agent" "$worktree"
+  toml_set "$CREW/config.toml" "roles.$role" agent "\"$agent\""
+  toml_set "$CREW/config.toml" "roles.$role" worktree "$worktree"
+  load_config
   write_new_role_file "$role" "$like"
   write_protocol
   ok "added $role ($agent, worktree: $worktree)"
@@ -804,52 +1218,53 @@ write_new_role_file() {
 role_edit() {
   role_exists "${1:-}" || die "usage: crew role edit <role>"
   ${VISUAL:-${EDITOR:-vi}} "$CREW/roles/$1.md"
-  herdr_running && agent_running "$1" &&
-    deliver "$1" "[crew] Your role file was updated. Re-read $CREW/roles/$1.md and follow the new version." &&
+  has "$MUX" && mux ready && mux agent_running "$1" &&
+    mux deliver "$1" "[crew] Your role file was updated. Re-read $CREW/roles/$1.md and follow the new version." &&
     ok "told $1 to re-read its role"
   return 0
 }
 
-# Changes a role's agent or worktree setting, e.g. agent=codex worktree=no.
+# Changes a role's settings, e.g. agent=codex worktree=no.
 role_set() {
-  local role="${1:-}" agent worktree kv
+  local role="${1:-}" kv
   role_exists "$role" && [ $# -ge 2 ] || die "usage: crew role set <role> agent=<x> worktree=<yes|no>"
   shift
-  agent="$(role_agent "$role")"; worktree="$(role_worktree "$role")"
   for kv in "$@"; do
     case "$kv" in
-      agent=*)                   agent="${kv#agent=}" ;;
-      worktree=yes|worktree=no)  worktree="${kv#worktree=}" ;;
-      *)                         die "unknown setting '$kv'" ;;
+      agent=*)    toml_set "$CREW/config.toml" "roles.$role" agent "\"${kv#agent=}\"" ;;
+      worktree=*) toml_set "$CREW/config.toml" "roles.$role" worktree "$(to_bool "${kv#worktree=}")" ;;
+      *)          die "unknown setting '$kv' (use agent= or worktree=)" ;;
     esac
   done
-  roster_update "$role" "$agent" "$worktree"
+  load_config
   write_protocol
-  ok "$role → agent $agent, worktree $worktree"
+  ok "$role → agent $(role_agent "$role"), worktree $(cfg "roles.$role.worktree" true)"
   info "apply it with: crew restart $role"
 }
 
-# Removes a role from the roster and closes its pane. Its file, worktree and branch are kept.
+# Removes a role and closes its pane. Its file, worktree and branch are kept.
 role_rm() {
   role_exists "${1:-}" || die "usage: crew role rm <role>"
-  close_role_pane "$1"
-  roster_remove "$1"
+  has "$MUX" && mux ready && close_role_pane "$1"
+  toml_remove_section "$CREW/config.toml" "roles\\.$1"
+  load_config
   write_protocol
   ok "removed $1 (its role file, worktree and branch are kept)"
 }
 
-# Saves a role file, or the whole roster, as your default for new repos.
+# Saves a role file, or all of this repo's roles, as your defaults for new repos.
 role_save() {
   if [ -z "${1:-}" ]; then
-    mkdir -p "$CREW_HOME"
-    cp "$CREW/crew.conf" "$CREW_HOME/crew.conf"
-    ok "saved this roster as your default for new repos"
+    [ -f "$GLOBAL_CONFIG" ] || write_global_config
+    { toml_filter "$GLOBAL_CONFIG" drop '^roles\.'; printf '\n'; toml_filter "$CREW/config.toml" keep '^roles\.'; } |
+      cat -s > "$GLOBAL_CONFIG.tmp" && mv "$GLOBAL_CONFIG.tmp" "$GLOBAL_CONFIG"
+    ok "saved this repo's roles as your default for new repos ($(tilde "$GLOBAL_CONFIG"))"
     return
   fi
   [ -f "$CREW/roles/$1.md" ] || die "no role '$1'"
   mkdir -p "$CREW_HOME/roles"
   cp "$CREW/roles/$1.md" "$CREW_HOME/roles/$1.md"
-  ok "saved $1 as your template for new repos"
+  ok "saved $1's instructions as your template for new repos"
 }
 
 # ============================================================ help and entry point
@@ -857,14 +1272,14 @@ role_save() {
 # Prints the command list.
 usage() {
   cat <<EOF
-${BOLD}crew${RESET} $CREW_VERSION: a team of AI coding agents in herdr
+${BOLD}crew${RESET} $CREW_VERSION: a team of AI coding agents in herdr or tmux
 
 ${BOLD}Running the crew${RESET}
-  crew setup                  create .crew/ in this repo (roster, roles, board, tasks)
-  crew start [--no-attach]    set up if needed, start or revive every agent, open herdr
+  crew setup                  create .crew/ in this repo (config, roles, board, tasks)
+  crew start [--no-attach]    set up if needed, start or revive every agent, open the session
   crew status                 each agent and what it's doing
   crew restart <role|all>     restart agents (they resume from their notes)
-  crew stop                   close the herdr workspace (files and worktrees kept)
+  crew stop                   close the session (files and worktrees kept)
   crew teardown               stop and remove clean worktrees
 
 ${BOLD}Talking${RESET}
@@ -879,8 +1294,14 @@ ${BOLD}Roles${RESET}
   crew role edit <name>       edit instructions (a running agent is told to re-read)
   crew role set <name> agent=codex worktree=no
   crew role rm <name>
-  crew role save [name]       save a role, or the whole roster, as your default
+  crew role save [name]       save a role's instructions, or all roles, as your defaults
 
+${BOLD}Config${RESET}
+  crew config                 show the settings in effect for this repo
+  crew config edit            edit this repo's .crew/config.toml
+  crew config edit --global   edit $(tilde "$GLOBAL_CONFIG") (created if missing)
+  crew config init            create the global config if missing (install.sh runs this)
+  crew config example         print a sample config with every setting explained
   crew doctor                 check what's installed
 EOF
 }
@@ -900,6 +1321,7 @@ main() {
     stop|down)         cmd_stop "$@" ;;
     teardown)          cmd_teardown "$@" ;;
     role|roles)        cmd_role "$@" ;;
+    config)            cmd_config "$@" ;;
     doctor)            cmd_doctor "$@" ;;
     version|--version) echo "crew $CREW_VERSION" ;;
     help|-h|--help)    usage ;;
