@@ -70,6 +70,7 @@ These were settled while building crew. Don't reverse one without a good reason,
 - **TOML with two layers: `~/.config/crew/config.toml` (global) and `.crew/config.toml` (repo); repo wins.** It's edited with `toml_edit`, so comments and ordering survive `crew role add/set/rm/save`. TOML was chosen over YAML because it's flat and doesn't depend on indentation.
 - **Roles are read only from the repo file.** Global roles are a template that `crew setup` copies and `crew role save` replaces.
 - **Agent launch commands are config, not code:** `command = "claude --add-dir {crew}"` or a list of words, with `{crew}`, `{repo}`, `{role}` and `{prompt}` placeholders. The kickoff prompt is appended unless `{prompt}` is used. String commands are split shell-style before placeholders are filled in, so paths with spaces stay intact.
+- **Codex runs with `--sandbox workspace-write`.** In a worktree it hasn't trusted yet, Codex starts read-only and then exits on `--add-dir` ("effective permissions do not allow additional writable roots"). `workspace-write` is Codex's normal mode: it can write in its worktree and `.crew/`, and still asks before anything else. Found on the human's first real run.
 - **herdr `kind`** defaults to the agent's name when herdr knows it (list copied from herdr 0.9.5). Then crew uses `herdr agent start` for naming and status tracking; `kind = ""` makes herdr type the command instead.
 - **Settings must sit above any `[section]`** to be top-level. That's TOML, and the docs and generated files say so.
 - **`crew config init` creates the global config** from `config.example.toml`, choosing herdr if it's installed, otherwise tmux. It never overwrites an existing config; the installer runs it.
@@ -98,5 +99,5 @@ These were settled while building crew. Don't reverse one without a good reason,
 
 ## Not done yet
 
-- A full session with real Claude, Codex and Gemini under herdr and tmux. The tests use stand-in agents and a fake herdr.
-- The first tagged release (v0.6.0), then the Homebrew tap and a demo recording for the README.
+- A full session with real Claude, Codex and Gemini under herdr and tmux. The first real run found the Codex sandbox problem above; the tests use stand-in agents and a fake herdr.
+- The Homebrew tap and a demo recording for the README.

@@ -74,7 +74,7 @@ If an agent has open work but its screen hasn't changed for 10 minutes, crew tel
 ## Worth knowing
 
 - **Cost:** every role is a full agent session, so three roles use about three times the tokens.
-- **Permissions:** agents run with their normal settings, so they still ask before running commands. On first launch each one asks you to trust the folder.
+- **Permissions:** agents run with their normal settings, so they still ask before running commands. On first launch each one asks you to trust the folder. Codex is started with `--sandbox workspace-write` so it can write to its worktree and the shared `.crew` folder.
 - **Your work is safe:** crew never pushes, and never deletes a branch or a worktree with uncommitted changes. Review the lead's merges before you push.
 - **herdr vs tmux:** herdr shows whether each agent is working, idle or blocked. tmux only knows running or stopped.
 

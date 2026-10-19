@@ -34,7 +34,7 @@ watch_interval = 30
 command = "claude --add-dir {crew}"
 
 [agents.codex]
-command = "codex --add-dir {crew}"
+command = "codex --sandbox workspace-write --add-dir {crew}"   # read-only would refuse --add-dir
 
 [agents.gemini]
 command = "gemini --include-directories {crew} -i"
