@@ -219,7 +219,9 @@ make_fake_herdr
 R="$(new_repo herdr)"; cd "$R" || exit 1
 crew setup >/dev/null
 set_repo_setting "$R" 'multiplexer = "herdr"'
-check "start with herdr"                     crew start --no-attach
+check "refuses to open herdr inside tmux"    sh -c "TMUX=/tmp/fake,1,0 $CREW_RUN start 2>&1 | grep -q \"you're inside tmux, but this crew uses herdr\""
+check "nothing is created when it refuses"   sh -c "! grep -q 'workspace create' '$WORK/log/herdr' 2>/dev/null"
+check "--no-attach still works inside tmux"  env TMUX=/tmp/fake,1,0 "$CREW_BIN" start --no-attach
 check "creates a workspace"                  file_has "$WORK/log/herdr" "workspace create"
 check "splits a pane per extra role"         test "$(grep -c '^pane split' "$WORK/log/herdr")" -eq 2
 check "opens the board tab"                  file_has "$WORK/log/herdr" "--label board"
@@ -235,6 +237,7 @@ if have_tmux3; then
   echo "# tmux"
   R="$(new_repo tmux)"; cd "$R" || exit 1
   crew setup >/dev/null
+  check "refuses to open tmux inside herdr"  sh -c "HERDR_ENV=1 $CREW_RUN start 2>&1 | grep -q \"you're inside herdr, but this crew uses tmux\""
   check "start with tmux"                    crew start --no-attach
   check "session exists"                     tmux has-session -t "=crew-tmux"
   check "three agent panes"                  test "$(tmux list-panes -t '=crew-tmux:agents' | wc -l | tr -d ' ')" -eq 3

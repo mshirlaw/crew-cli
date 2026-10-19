@@ -4,6 +4,9 @@ use crate::util::ui;
 use anyhow::{bail, Result};
 
 pub fn start(ctx: &mut Ctx, attach: bool) -> Result<()> {
+    if attach {
+        refuse_nesting(ctx.mux.name())?;
+    }
     if ctx.require_crew().is_err() {
         super::setup::create(ctx)?;
     }
@@ -77,4 +80,44 @@ fn confirm(question: &str) -> bool {
     let _ = std::io::stdout().flush();
     let mut answer = String::new();
     std::io::stdin().read_line(&mut answer).is_ok() && matches!(answer.trim(), "y" | "Y" | "yes")
+}
+
+// Opening one multiplexer inside the other is confusing (both default to ctrl+b), so refuse rather than nest.
+fn refuse_nesting(mux: &str) -> Result<()> {
+    let in_tmux = std::env::var_os("TMUX").is_some();
+    let in_herdr = std::env::var("HERDR_ENV").as_deref() == Ok("1");
+    if let Some(current) = nesting_conflict(mux, in_tmux, in_herdr) {
+        bail!(
+            "you're inside {current}, but this crew uses {mux}. Run crew start from a plain terminal or from {mux}, \
+             set multiplexer = \"{current}\" in .crew/config.toml, or use crew start --no-attach"
+        );
+    }
+    Ok(())
+}
+
+// tmux is checked first: TMUX is set in the innermost tmux even when that tmux runs inside herdr.
+fn nesting_conflict(mux: &str, in_tmux: bool, in_herdr: bool) -> Option<&'static str> {
+    let current = if in_tmux {
+        "tmux"
+    } else if in_herdr {
+        "herdr"
+    } else {
+        return None;
+    };
+    (current != mux).then_some(current)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::nesting_conflict;
+
+    #[test]
+    fn only_the_other_multiplexer_conflicts() {
+        assert_eq!(nesting_conflict("herdr", true, false), Some("tmux"));
+        assert_eq!(nesting_conflict("tmux", false, true), Some("herdr"));
+        assert_eq!(nesting_conflict("tmux", true, false), None);
+        assert_eq!(nesting_conflict("herdr", false, true), None);
+        assert_eq!(nesting_conflict("herdr", false, false), None);
+        assert_eq!(nesting_conflict("herdr", true, true), Some("tmux"));
+    }
 }

@@ -78,6 +78,7 @@ These were settled while building crew. Don't reverse one without a good reason,
 - **herdr and tmux implement one `Mux` trait.** Adding a multiplexer means implementing it and adding a `MuxKind`.
 - **herdr is driven through its CLI,** whose command shapes are tested against a fake. Its JSON is parsed with serde_json (no jq). Talking to herdr's socket API directly is a possible future improvement.
 - **tmux can only report running or stopped.** An agent counts as running when the pane's shell has a child process. It isn't matched by process name, because many agent wrappers are shell scripts.
+- **Never nest one multiplexer in the other.** If `crew start` would open herdr inside tmux, or tmux inside herdr, it stops with an error before creating anything (both default to `ctrl+b`, so nesting is confusing). The human chose an error over silently switching multiplexers, because it's an edge case. `--no-attach` still works, since it opens nothing.
 - **The tmux layout is `main-vertical`:** the first role on the left, the rest stacked on the right, plus a `board` window tailing `board.md`.
 - **State records which multiplexer created it.** Switching multiplexers discards stale pane ids instead of reusing them.
 
@@ -97,6 +98,9 @@ These were settled while building crew. Don't reverse one without a good reason,
 
 ### Upgrades
 - 0.2's `.crew/crew.conf` is converted to `.crew/config.toml` automatically (the old file is kept as `crew.conf.old`). A hand-written `tasks.md` from 0.2 or 0.3 is moved to `tasks-old.md`.
+
+### Docs
+- **The README stays short:** what crew is, install, use, configure, how it works, and the few things worth knowing. No upgrade notes or edge cases for a tool nobody has used yet; detail lives in `crew help`, `config.example.toml` and this file.
 
 ## Not done yet
 
