@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Runs crew's tests in a throwaway home folder, with stand-in agents instead of real ones.
+# Runs crew's end-to-end tests in a throwaway home folder, with stand-in agents instead of real ones.
 #
-#   test/run.sh                         run everything
-#   CREW_BASH=/bin/bash test/run.sh     run crew under a specific bash (CI uses macOS's bash 3.2)
+#   test/run.sh                          build crew (cargo build --release) and run everything
+#   CREW_BIN=/path/to/crew test/run.sh   test an already-built binary
 #
 # The tmux tests run only if tmux 3.0+ is installed. herdr is tested against a fake
 # that records the commands crew sends it, so real herdr isn't needed.
@@ -10,7 +10,7 @@ set -u
 
 TEST_DIR="$(cd "$(dirname "$0")" && pwd)"
 SOURCE_DIR="$(dirname "$TEST_DIR")"
-WORK="$(mktemp -d)"
+WORK="$(cd "$(mktemp -d)" && pwd -P)"   # physical path, so it matches what crew resolves
 PASSED=0
 FAILED=0
 
@@ -25,11 +25,16 @@ mkdir -p "$HOME" "$WORK/bin" "$WORK/log" "$TMUX_TMPDIR"
 cleanup() { tmux kill-server >/dev/null 2>&1; rm -rf "$WORK"; }
 trap cleanup EXIT
 
-# Runs crew from the source folder under the chosen bash.
-crew() { "${CREW_BASH:-bash}" "$SOURCE_DIR/crew" "$@"; }
+CREW_BIN="${CREW_BIN:-$SOURCE_DIR/target/release/crew}"
+if [ "$CREW_BIN" = "$SOURCE_DIR/target/release/crew" ]; then
+  (cd "$SOURCE_DIR" && cargo build --release --quiet) || { echo "cargo build failed" >&2; exit 1; }
+fi
+
+# Runs the crew binary under test.
+crew() { "$CREW_BIN" "$@"; }
 
 # The same command as text, for checks that run inside sh -c.
-CREW_RUN="${CREW_BASH:-bash} '$SOURCE_DIR/crew'"
+CREW_RUN="'$CREW_BIN'"
 
 # Records a passing or failing check.
 check() {
@@ -40,6 +45,9 @@ check() {
 
 # Succeeds if a command's output contains some text.
 output_has() { local text="$1"; shift; "$@" 2>&1 | grep -qF -- "$text"; }
+
+# Succeeds if a command's output matches an extended regular expression.
+output_matches() { local pattern="$1"; shift; "$@" 2>&1 | grep -qE -- "$pattern"; }
 
 # Succeeds if a file contains some text.
 file_has() { grep -qF -- "$2" "$1" 2>/dev/null; }
@@ -128,9 +136,9 @@ check "setup writes the protocol"            file_has .crew/PROTOCOL.md "crew sa
 check "setup hides .crew from git"           file_has .git/info/exclude ".crew/"
 check "git status stays clean"               test -z "$(git status --porcelain)"
 check "setup records the base branch"        file_has .crew/config.toml 'base_branch = "main"'
-check "global multiplexer is used"           output_has "multiplexer   tmux" crew config
+check "global multiplexer is used"           output_matches "multiplexer +tmux" crew config
 set_repo_setting "$R" 'multiplexer = "herdr"'
-check "repo setting overrides global"        output_has "multiplexer   herdr" crew config
+check "repo setting overrides global"        output_matches "multiplexer +herdr" crew config
 R3="$(new_repo bad-mux)"; (cd "$R3" && crew setup >/dev/null); set_repo_setting "$R3" 'multiplexer = "screen"'
 check "bad multiplexer is rejected"          sh -c "cd '$R3' && ! $CREW_RUN role list 2>/dev/null"
 check "bad multiplexer error is clear"       sh -c "cd '$R3' && $CREW_RUN role list 2>&1 | grep -q 'must be \"herdr\" or \"tmux\"'"
@@ -271,10 +279,10 @@ fi
 
 echo "# installer"
 INSTALL_HOME="$WORK/install-home"; mkdir -p "$INSTALL_HOME"
-check "install from a folder"              env HOME="$INSTALL_HOME" CREW_BIN_DIR="$INSTALL_HOME/bin" bash "$SOURCE_DIR/install.sh"
+check "install from a folder"              env HOME="$INSTALL_HOME" CREW_BIN_DIR="$INSTALL_HOME/bin" CREW_BINARY="$CREW_BIN" bash "$SOURCE_DIR/install.sh"
 check "installed command runs"             output_has "crew " "$INSTALL_HOME/bin/crew" version
 check "install creates the global config"  test -f "$INSTALL_HOME/.config/crew/config.toml"
-check "reinstall keeps the config"         output_has "left unchanged" env HOME="$INSTALL_HOME" CREW_BIN_DIR="$INSTALL_HOME/bin" bash "$SOURCE_DIR/install.sh"
+check "reinstall keeps the config"         output_has "left unchanged" env HOME="$INSTALL_HOME" CREW_BIN_DIR="$INSTALL_HOME/bin" CREW_BINARY="$CREW_BIN" bash "$SOURCE_DIR/install.sh"
 check "uninstall removes the command"      sh -c "HOME='$INSTALL_HOME' CREW_BIN_DIR='$INSTALL_HOME/bin' bash '$SOURCE_DIR/install.sh' --uninstall >/dev/null && ! test -e '$INSTALL_HOME/bin/crew'"
 
 # ------------------------------------------------------------ summary

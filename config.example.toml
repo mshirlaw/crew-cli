@@ -1,4 +1,5 @@
 # crew global settings. Applies to every repo; a repo's .crew/config.toml overrides anything here.
+# Settings must come before the first [section] to be top-level.
 
 # Which terminal multiplexer runs the agents: "herdr" or "tmux".
 # herdr shows each agent's state (working, blocked, done) and can tell when one is busy.
@@ -21,7 +22,7 @@ stall_timeout = 600
 # How often, in seconds, crew checks for stalled agents.
 watch_interval = 30
 
-# How each agent is launched. Placeholders:
+# How each agent is launched, as a string or a list of words. Placeholders:
 #   {crew}   the shared .crew folder (agents need access to it)
 #   {repo}   the repo's main folder
 #   {role}   the role name
@@ -40,7 +41,7 @@ command = "gemini --include-directories {crew} -i"
 
 # Any other CLI works too:
 # [agents.mytool]
-# command = "mytool --workspace {crew} --message {prompt}"
+# command = ["mytool", "--workspace", "{crew}", "--message", "{prompt}"]
 # kind = ""
 
 # Default roles for new repos. "crew setup" copies these into .crew/config.toml.

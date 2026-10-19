@@ -1,0 +1,24 @@
+[package]
+name = "crew"
+version = "0.6.0"
+edition = "2021"
+rust-version = "1.89"
+description = "Start a team of AI coding agents in herdr or tmux, each with a role, its own git worktree and a shared message board"
+license = "MIT"
+repository = "https://github.com/mshirlaw/crew-cli"
+readme = "README.md"
+keywords = ["ai", "agents", "tmux", "herdr", "cli"]
+categories = ["command-line-utilities", "development-tools"]
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+clap = { version = "4", features = ["derive"] }
+serde_json = "1"
+shlex = "1"
+toml_edit = "0.22"
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1

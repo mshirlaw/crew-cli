@@ -26,14 +26,14 @@ Tell the lead what you want. It writes tasks, hands them out, and the agents mes
 
 ## Install
 
-You need git and one multiplexer: [herdr](https://herdr.dev) (plus `jq`), or tmux 3.0 or newer.
+crew is a single binary for macOS (Apple Silicon and Intel) and Linux (x86_64 and ARM64, including Raspberry Pi OS 64-bit). You need git and one multiplexer: [herdr](https://herdr.dev), or tmux 3.0 or newer.
 
 ```
 curl -fsSL https://raw.githubusercontent.com/mshirlaw/crew-cli/main/install.sh | bash
 crew doctor
 ```
 
-Or clone the repo and run `./install.sh`. To install a specific release, add `CREW_REF=v0.4.0` before `bash`.
+The installer downloads the right binary for your machine from the latest GitHub release and checks its checksum. To pin a release, put `CREW_VERSION=v0.6.0` before `bash`. From a clone with [Rust](https://rustup.rs) installed, `./install.sh` builds from source instead. Or skip the installer: `cargo install --git https://github.com/mshirlaw/crew-cli`.
 
 The installer copies `crew` to `~/.local/bin` and creates `~/.config/crew/config.toml`, picking herdr if it's installed, otherwise tmux. Run it again to update; your config is left alone.
 
@@ -104,7 +104,6 @@ Before you start a crew, know what it costs and what it can touch.
 - Roles are only as good as their instructions. Expect to tune `.crew/roles/*.md` for your project.
 - On tmux, crew can only tell whether an agent is running, not whether it's busy or waiting for approval. Messages to a busy agent are typed in anyway.
 - Stall detection is deliberately generic: crew can tell an agent has gone quiet while it owes work, not why. The lead (or you) has to look and decide.
-- The config reads a subset of TOML: sections, strings, numbers and true/false, no arrays.
 - Two crews can't share one repo checkout at the same time.
 
 ## How it works
@@ -174,7 +173,7 @@ Changes to a role's agent or worktree apply after `crew restart <role>`. Saved r
 
 ## Contributing
 
-Bug reports and pull requests are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). Run `test/run.sh` before sending a change.
+Bug reports and pull requests are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). crew is written in Rust; run `cargo test` and `test/run.sh` before sending a change.
 
 ## License
 

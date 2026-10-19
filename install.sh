@@ -1,17 +1,22 @@
 #!/usr/bin/env bash
-# Installs the crew command and creates your global config if you don't have one.
+# Installs crew and creates your global config if you don't have one.
 #
-#   ./install.sh                 install from this folder
 #   curl -fsSL https://raw.githubusercontent.com/mshirlaw/crew-cli/main/install.sh | bash
-#                                install without cloning (downloads crew from GitHub)
-#   ./install.sh --uninstall     remove the crew command (your config and repos are kept)
+#                                downloads the prebuilt crew for your OS and chip
+#   ./install.sh                 from a clone: builds with cargo if you have Rust, otherwise downloads
+#   ./install.sh --uninstall     removes crew (your config and repos are kept)
 #
-# Environment: CREW_BIN_DIR (default ~/.local/bin), CREW_REF (git tag or branch to download, default main).
+# Environment:
+#   CREW_BIN_DIR   where to install (default ~/.local/bin)
+#   CREW_VERSION   release to download, e.g. v0.6.0 (default: the latest release)
+#   CREW_BINARY    install this already-built binary instead of building or downloading
 set -eu
 
 REPO="mshirlaw/crew-cli"
 DEST="${CREW_BIN_DIR:-$HOME/.local/bin}"
-REF="${CREW_REF:-main}"
+
+# Prints an error and exits.
+fail() { echo "✗ $*" >&2; exit 1; }
 
 # Prints the shell startup file to add PATH changes to.
 shell_rc() {
@@ -37,26 +42,65 @@ script_dir() {
   [ -n "$src" ] && [ -f "$src" ] && cd "$(dirname "$src")" && pwd
 }
 
-# Copies crew from this folder, or downloads it from GitHub when there's no local copy.
+# Prints the release target for this OS and chip, e.g. aarch64-apple-darwin.
+target_triple() {
+  case "$(uname -s)/$(uname -m)" in
+    Darwin/arm64)                echo aarch64-apple-darwin ;;
+    Darwin/x86_64)               echo x86_64-apple-darwin ;;
+    Linux/x86_64)                echo x86_64-unknown-linux-musl ;;
+    Linux/aarch64 | Linux/arm64) echo aarch64-unknown-linux-musl ;;
+    *) fail "there's no prebuilt crew for $(uname -s) $(uname -m). Install Rust (https://rustup.rs) and run: cargo install --git https://github.com/$REPO" ;;
+  esac
+}
+
+# Prints the SHA-256 of a file.
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
+  else shasum -a 256 "$1" | cut -d' ' -f1; fi
+}
+
+# Downloads the prebuilt binary for this machine, checks its checksum, and installs it.
+download_and_install() {
+  local target base tmp
+  command -v curl >/dev/null 2>&1 || fail "curl is needed to download crew: $(install_hint curl)"
+  target="$(target_triple)"
+  if [ -n "${CREW_VERSION:-}" ]; then base="https://github.com/$REPO/releases/download/$CREW_VERSION"
+  else base="https://github.com/$REPO/releases/latest/download"; fi
+  tmp="$(mktemp -d)"
+  curl -fsSL "$base/crew-$target.tar.gz" -o "$tmp/crew.tar.gz" ||
+    fail "could not download crew for $target from $base"
+  curl -fsSL "$base/crew-$target.tar.gz.sha256" -o "$tmp/crew.sha256" ||
+    fail "could not download the checksum for crew"
+  [ "$(sha256_of "$tmp/crew.tar.gz")" = "$(cut -d' ' -f1 < "$tmp/crew.sha256")" ] ||
+    fail "the download's checksum doesn't match. Try again, or report it at https://github.com/$REPO/issues"
+  tar -xzf "$tmp/crew.tar.gz" -C "$tmp"
+  install -m 755 "$tmp/crew" "$DEST/crew"
+  rm -rf "$tmp"
+}
+
+# Builds crew from this clone with cargo and installs it.
+build_and_install() {
+  echo "• building crew with cargo (this takes a minute the first time)"
+  cargo build --release --quiet --manifest-path "$1/Cargo.toml"
+  install -m 755 "$1/target/release/crew" "$DEST/crew"
+}
+
+# Installs crew from a given binary, this clone, or a GitHub release.
 install_crew() {
-  local here tmp
+  local here
   here="$(script_dir || true)"
   mkdir -p "$DEST"
-  if [ -n "$here" ] && [ -f "$here/crew" ]; then
-    install -m 755 "$here/crew" "$DEST/crew"
+  if [ -n "${CREW_BINARY:-}" ]; then
+    install -m 755 "$CREW_BINARY" "$DEST/crew"
+  elif [ -n "$here" ] && [ -f "$here/Cargo.toml" ] && command -v cargo >/dev/null 2>&1; then
+    build_and_install "$here"
   else
-    command -v curl >/dev/null 2>&1 || { echo "✗ curl is needed to download crew: $(install_hint curl)" >&2; exit 1; }
-    tmp="$(mktemp)"
-    curl -fsSL "https://raw.githubusercontent.com/$REPO/$REF/crew" -o "$tmp" ||
-      { echo "✗ could not download crew from $REPO ($REF)" >&2; rm -f "$tmp"; exit 1; }
-    head -1 "$tmp" | grep -q '^#!.*bash' || { echo "✗ downloaded file doesn't look like crew" >&2; rm -f "$tmp"; exit 1; }
-    install -m 755 "$tmp" "$DEST/crew"
-    rm -f "$tmp"
+    download_and_install
   fi
   echo "✓ installed $("$DEST/crew" version) to $DEST/crew"
 }
 
-# Removes the crew command and says what was left behind.
+# Removes crew and says what was left behind.
 uninstall_crew() {
   rm -f "$DEST/crew"
   echo "✓ removed $DEST/crew"
@@ -76,9 +120,6 @@ check_requirements() {
   command -v git >/dev/null 2>&1 || echo "! git is missing: $(install_hint git)"
   if ! command -v herdr >/dev/null 2>&1 && ! command -v tmux >/dev/null 2>&1; then
     echo "! you need herdr (https://herdr.dev) or tmux: $(install_hint tmux)"
-  fi
-  if command -v herdr >/dev/null 2>&1 && ! command -v jq >/dev/null 2>&1 && ! command -v python3 >/dev/null 2>&1; then
-    echo "! herdr support needs jq: $(install_hint jq)"
   fi
 }
 

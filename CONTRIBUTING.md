@@ -1,30 +1,40 @@
 # Contributing to crew
 
-Thanks for helping. crew is a single bash script, so changes are usually small. Please keep it that way.
+Thanks for helping. crew is a small Rust program; please keep it small and readable.
 
 ## Ground rules
 
-- **One file, no dependencies.** `crew` must run on macOS's built-in bash 3.2 and on Linux with only git and herdr or tmux. jq or python3 is needed only for herdr. Don't add other tools.
-- **Small functions with a comment.** Every function does one thing and has a one-line plain-English comment above it saying what it does.
-- **No bash 4+ features.** That means no associative arrays, `mapfile`, `${var,,}` or `|&`. CI runs the tests under `/bin/bash` on macOS to catch these.
-- **Keep the sample config in sync.** If you change `global_config_template`, regenerate the sample with `./crew config example > config.example.toml`. A test checks this.
+- **Small single-purpose functions, each with a one-line `///` comment** saying in plain English what it does. Command functions (`cmd_*`) should read as a list of steps.
+- **Few dependencies.** crew uses anyhow, chrono, clap, serde_json, shlex and toml_edit. Ask before adding another.
+- **No runtime requirements beyond git and herdr or tmux.** crew is a single binary; don't make it need Python, jq or anything else at runtime.
+- **The sample config is the template.** `crew config init` writes `config.example.toml` as it is (it's compiled in), so edit that file to change the starter config.
+- Read [AGENTS.md](AGENTS.md) for the design decisions before changing behaviour.
 
-## Running the tests
+## Building and testing
 
 ```
-test/run.sh                         # everything
-CREW_BASH=/bin/bash test/run.sh     # under a specific bash
-shellcheck crew install.sh test/run.sh
+cargo build --release
+cargo fmt                                  # format
+cargo clippy --all-targets -- -D warnings  # lint; CI fails on any warning
+cargo test                                 # unit tests
+test/run.sh                                # end-to-end tests against target/release/crew
+shellcheck install.sh test/run.sh
 ```
 
-The tests use a throwaway home folder and stand-in agents, so they never touch your real config or start real agents. The tmux tests run only when tmux 3.0+ is installed. herdr is tested against a fake that records the commands crew sends it.
+The end-to-end tests use a throwaway home folder and stand-in agents, so they never touch your real config or start real agents. The tmux tests run only when tmux 3.0+ is installed. herdr is tested against a fake that records the commands crew sends it.
 
-Add a test for any change in behaviour. Each test is a single `check "what it proves" command...` line in `test/run.sh`.
+Add tests for any change in behaviour: a unit test next to the code for pure logic, or a `check "what it proves" command...` line in `test/run.sh` for anything you'd see from the command line.
+
+## Releasing
+
+1. Bump `version` in `Cargo.toml` and run `cargo build` so `Cargo.lock` updates.
+2. Commit, then tag and push: `git tag v0.6.0 && git push origin v0.6.0`.
+3. The release workflow checks the tag matches `Cargo.toml`, builds macOS and Linux binaries, and publishes a GitHub release with checksums. `install.sh` downloads from the latest release.
 
 ## Supporting another multiplexer
 
-Each multiplexer is a set of functions named `<name>_<action>`, e.g. `tmux_split` and `herdr_split`, which crew calls through `mux <action>`. To add one, implement the same actions as `tmux_*`, allow the name in `load_config`, and add tests.
+Implement the `Mux` trait in `src/mux/` (see `tmux.rs`), add it to `MuxKind` in `src/config.rs`, and add tests.
 
 ## Reporting bugs
 
-Please include the output of `crew doctor`, `crew config`, your OS, and the multiplexer and agent versions. If messages or agents misbehave, the last lines of `.crew/board.md` help too.
+Please include the output of `crew doctor`, `crew config` and `crew version`, your OS, and the multiplexer and agent versions. If messages or agents misbehave, the last lines of `.crew/board.md` help too.

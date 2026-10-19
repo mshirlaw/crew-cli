@@ -14,24 +14,42 @@ jobs:
         include:
           - name: Linux
             os: ubuntu-latest
-            bash: bash
-          - name: macOS (bash 3.2)
+          - name: macOS
             os: macos-latest
-            bash: /bin/bash
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - name: Install tmux and shellcheck (Linux)
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install tmux (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y tmux shellcheck
+        run: sudo apt-get update && sudo apt-get install -y tmux
 
-      - name: Install tmux and shellcheck (macOS)
+      - name: Install tmux (macOS)
         if: runner.os == 'macOS'
-        run: brew install tmux shellcheck
+        run: brew install tmux
+
+      # The same shellcheck version everywhere, so Linux and macOS agree.
+      - name: Install shellcheck
+        run: |
+          python3 -m venv "$RUNNER_TEMP/shellcheck"
+          "$RUNNER_TEMP/shellcheck/bin/pip" install --quiet shellcheck-py==0.11.0.1
+          echo "$RUNNER_TEMP/shellcheck/bin" >> "$GITHUB_PATH"
+
+      - name: Formatting
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Unit tests
+        run: cargo test
 
       - name: Shellcheck
-        run: shellcheck crew install.sh test/run.sh
+        run: shellcheck install.sh test/run.sh
 
-      - name: Tests
-        run: CREW_BASH=${{ matrix.bash }} test/run.sh
+      - name: End-to-end tests
+        run: test/run.sh
