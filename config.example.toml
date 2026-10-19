@@ -12,6 +12,15 @@ worktree_dir = "~/.crew/worktrees"
 # Raise it (e.g. 1) if messages arrive in an agent's input box but aren't sent.
 paste_delay = 0.3
 
+# If an agent owes work (an open task or an unanswered message) and its screen hasn't
+# changed for this many seconds, crew tells the lead so it can check or reassign the work.
+# This catches agents that ran out of tokens, are waiting for an approval, or crashed.
+# If the lead itself stalls, you get the alert. Set to 0 to turn this off.
+stall_timeout = 600
+
+# How often, in seconds, crew checks for stalled agents.
+watch_interval = 30
+
 # How each agent is launched. Placeholders:
 #   {crew}   the shared .crew folder (agents need access to it)
 #   {repo}   the repo's main folder

@@ -103,7 +103,7 @@ Before you start a crew, know what it costs and what it can touch.
 
 - Roles are only as good as their instructions. Expect to tune `.crew/roles/*.md` for your project.
 - On tmux, crew can only tell whether an agent is running, not whether it's busy or waiting for approval. Messages to a busy agent are typed in anyway.
-- crew doesn't yet notice when an agent runs out of tokens or hits a usage limit. That agent just stops responding.
+- Stall detection is deliberately generic: crew can tell an agent has gone quiet while it owes work, not why. The lead (or you) has to look and decide.
 - The config reads a subset of TOML: sections, strings, numbers and true/false, no arrays.
 - Two crews can't share one repo checkout at the same time.
 
@@ -166,6 +166,7 @@ Changes to a role's agent or worktree apply after `crew restart <role>`. Saved r
 - **Messages not sending on tmux?** crew pastes the message, waits `paste_delay` seconds (default 0.3), then presses Enter. If messages sit in an agent's input box unsent, raise it, e.g. `paste_delay = 1` near the top of your config, above any `[section]`.
 - **Avoiding loops.** The protocol forbids "ok / thanks" messages. If two agents still ping-pong, tighten their role files.
 - **Merging.** Only the lead merges `crew/*` branches into your base branch. Review the result like any other change before pushing.
+- **Stalled agents.** If an agent owes work (an open task or an unanswered message) and its screen hasn't changed for `stall_timeout` seconds (default 600), crew tells the lead once, so it can check on the agent or reassign the work. That covers agents that ran out of tokens, are waiting for an approval, or crashed. If the lead stalls, you get the alert. `crew start` runs the watcher in the background and `crew stop` ends it; set `stall_timeout = 0` to turn it off.
 - **Shared tasks are safe.** `crew task` takes a lock before every change, so several agents can update tasks at once without losing an edit.
 - **Upgrading from 0.2 or 0.3.** An old hand-written `tasks.md` is moved to `tasks-old.md` the first time you run a task command.
 - **Upgrading from 0.2.** An old `.crew/crew.conf` is converted to `.crew/config.toml` automatically the first time you run crew.

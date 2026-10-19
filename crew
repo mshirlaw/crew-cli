@@ -9,9 +9,10 @@
 
 set -u
 
-CREW_VERSION="0.4.0"
+CREW_VERSION="0.5.0"
 CREW_HOME="${CREW_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/crew}"
 GLOBAL_CONFIG="$CREW_HOME/config.toml"
+CREW_SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 
 # Agent kinds herdr can start and track itself (from herdr 0.9.5). Override per agent with "kind" in the config.
 HERDR_KINDS=" pi claude codex gemini cursor devin agy cline omp mastracode opencode copilot kimi kiro droid amp grok hermes kilo qodercli qwen letta maki muse "
@@ -461,6 +462,12 @@ herdr_close_workspace() { local ws; ws="$(state_get ws)"; [ -n "$ws" ] && herdr 
 # Tidies the layout after panes are added. herdr needs nothing.
 herdr_finish_layout() { :; }
 
+# Prints what's on screen in a role's pane.
+herdr_screen() { local pane; pane="$(state_get "pane:$1")"; [ -n "$pane" ] && herdr pane read "$pane" --source visible 2>/dev/null; }
+
+# Shows the human a notification.
+herdr_notify() { herdr notification show "crew" --body "$1" --sound request >/dev/null 2>&1; }
+
 # Opens herdr on the crew workspace, unless we're already inside herdr.
 herdr_attach() {
   herdr workspace focus "$(state_get ws)" >/dev/null 2>&1
@@ -576,6 +583,144 @@ tmux_finish_layout() {
 # Opens the crew session, or switches to it if we're already inside tmux.
 tmux_attach() {
   if [ -n "${TMUX:-}" ]; then tmux switch-client -t "=$(tmux_session)"; else exec tmux attach-session -t "=$(tmux_session)"; fi
+}
+
+# Prints what's on screen in a role's pane.
+tmux_screen() { local pane; pane="$(state_get "pane:$1")"; [ -n "$pane" ] && tmux capture-pane -p -t "$pane" 2>/dev/null; }
+
+# Shows the human a message in the tmux status line.
+tmux_notify() { tmux display-message -t "=$(tmux_session)" "crew: $1" 2>/dev/null; }
+
+# ============================================================ stall watcher
+# An agent is stalled when it owes work (an open task or an unanswered message)
+# and its screen hasn't changed for stall_timeout seconds. The lead is told once per stall;
+# if the lead itself is stalled, the human is told instead.
+
+# Prints the stall timeout in seconds (stall_timeout, default 600; 0 turns the watcher off).
+stall_timeout() {
+  local t; t="$(cfg stall_timeout 600)"
+  case "$t" in ''|*[!0-9]*) warn "stall_timeout must be whole seconds, not \"$t\". Using 600"; echo 600 ;; *) echo "$t" ;; esac
+}
+
+# Prints how often the watcher checks, in seconds (watch_interval, default 30).
+watch_interval() {
+  local t; t="$(cfg watch_interval 30)"
+  case "$t" in ''|*[!0-9]*|0) echo 30 ;; *) echo "$t" ;; esac
+}
+
+# Prints the ids of a role's tasks that are todo or doing.
+open_tasks() {
+  [ -f "$CREW/tasks.tsv" ] || return 0
+  awk -F '\t' -v r="$1" '$3 == r && ($2 == "todo" || $2 == "doing") { print $1 }' "$CREW/tasks.tsv"
+}
+
+# Succeeds if someone messaged a role on the board after the role last posted there.
+has_unanswered_message() {
+  awk -v r="$1" '
+    /^### / {
+      n++
+      line = $0; sub(/^### [^ ]+ [^ ]+  /, "", line)
+      split(line, parts, " → "); from = parts[1]; to = parts[2]
+      if (from == r) last_out = n
+      else if (from != "crew" && (to == r || to == "all")) last_in = n
+    }
+    END { exit !(last_in > last_out) }
+  ' "$CREW/board.md" 2>/dev/null
+}
+
+# Prints why a role owes work, or nothing if it doesn't.
+owed_work() {
+  local tasks
+  tasks="$(open_tasks "$1" | tr '\n' ' ' | sed 's/ *$//')"
+  [ -n "$tasks" ] && printf 'open task(s) %s' "$tasks"
+  has_unanswered_message "$1" && printf '%san unanswered message' "${tasks:+ and }"
+}
+
+# Prints a short fingerprint of a role's screen.
+screen_fingerprint() { mux screen "$1" | cksum | tr -d ' '; }
+
+# Checks one role and raises an alert if it has just stalled.
+check_role() {
+  local role="$1" now file print last_print changed notified owed idle
+  now="$(date +%s)"
+  file="$STATE/watch-$role"
+  print="$(screen_fingerprint "$role")"
+  last_print=""; changed="$now"; notified=no
+  [ -f "$file" ] && read -r last_print changed notified < "$file"
+  if [ "$print" != "$last_print" ]; then
+    printf '%s %s no\n' "$print" "$now" > "$file"
+    return 0
+  fi
+  [ "$notified" = yes ] && return 0
+  owed="$(owed_work "$role")"
+  [ -n "$owed" ] || return 0
+  idle=$(( now - changed ))
+  [ "$idle" -ge "$(stall_timeout)" ] || return 0
+  printf '%s %s yes\n' "$print" "$changed" > "$file"
+  raise_stall_alert "$role" "$owed" "$idle"
+}
+
+# Prints a number of seconds as "45s" or "12 min".
+duration() { if [ "$1" -lt 60 ]; then printf '%ss' "$1"; else printf '%s min' "$(( $1 / 60 ))"; fi; }
+
+# Tells the lead (or the human, if the lead is the one stalled) that a role looks stuck.
+raise_stall_alert() {
+  local role="$1" owed="$2" text
+  text="$role has shown no activity for $(duration "$3") but has $owed. It may be out of tokens, waiting for an approval, or stuck."
+  if [ "$role" = lead ] || ! role_exists lead; then
+    post_to_board crew human "$text Check its pane."
+    mux notify "$text"
+  else
+    post_to_board crew lead "$text Check on it with crew say $role, or reassign its work with crew task set."
+    mux deliver lead "[crew] $text Check on it with: crew say $role \"...\", or reassign its work with: crew task set <id> owner=<role>." ||
+      mux notify "$text"
+  fi
+  warn "stall: $text"
+}
+
+# Checks every role once.
+watch_once() {
+  local r
+  for r in $(list_roles); do check_role "$r"; done
+}
+
+# Succeeds if this repo's watcher is running.
+watcher_running() {
+  local pid; pid="$(cat "$STATE/watch.pid" 2>/dev/null)"
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+
+# Starts the watcher in the background unless it's off or already running.
+start_watcher() {
+  [ "$(stall_timeout)" -gt 0 ] || return 0
+  watcher_running && return 0
+  rm -f "$STATE"/watch-*
+  CREW_DIR="$CREW" nohup "${BASH:-bash}" "$CREW_SELF" watch > "$STATE/watch.log" 2>&1 &
+  echo $! > "$STATE/watch.pid"
+  info "watching for stalled agents (stall_timeout: $(stall_timeout)s)"
+}
+
+# Stops the background watcher, including the sleep it may be waiting in.
+stop_watcher() {
+  local pid; pid="$(cat "$STATE/watch.pid" 2>/dev/null)"
+  rm -f "$STATE/watch.pid"
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || return 0
+  kill "$pid" 2>/dev/null
+  pkill -P "$pid" 2>/dev/null
+  return 0
+}
+
+# crew watch [--once]: checks for stalled agents every watch_interval seconds until the crew stops.
+cmd_watch() {
+  local misses=0
+  load_context; require_crew
+  if [ "${1:-}" = --once ]; then watch_once; return 0; fi
+  while [ $misses -lt 3 ]; do
+    # Stop if crew stop removed our pid file, or another watcher replaced us.
+    [ ! -f "$STATE/watch.pid" ] || [ "$(cat "$STATE/watch.pid")" = "$$" ] || break
+    if mux ready; then misses=0; watch_once; else misses=$((misses + 1)); fi
+    sleep "$(watch_interval)"
+  done
 }
 
 # ============================================================ worktrees
@@ -844,6 +989,15 @@ worktree_dir = "~/.crew/worktrees"
 # Raise it (e.g. 1) if messages arrive in an agent's input box but aren't sent.
 paste_delay = 0.3
 
+# If an agent owes work (an open task or an unanswered message) and its screen hasn't
+# changed for this many seconds, crew tells the lead so it can check or reassign the work.
+# This catches agents that ran out of tokens, are waiting for an approval, or crashed.
+# If the lead itself stalls, you get the alert. Set to 0 to turn this off.
+stall_timeout = 600
+
+# How often, in seconds, crew checks for stalled agents.
+watch_interval = 30
+
 # How each agent is launched. Placeholders:
 #   {crew}   the shared .crew folder (agents need access to it)
 #   {repo}   the repo's main folder
@@ -1069,6 +1223,7 @@ cmd_start() {
   write_protocol
   for r in $(list_roles); do ensure_worktree "$r"; done
   if mux workspace_exists; then revive_crew; else build_crew; fi
+  start_watcher
   printf '\n%sCrew is up.%s Talk to the lead in its pane, or run: %screw say lead "..."%s\n' "$BOLD" "$RESET" "$BOLD" "$RESET"
   [ "$attach" = yes ] && [ -t 1 ] && mux attach
   return 0
@@ -1089,6 +1244,7 @@ cmd_restart() {
 # crew stop: closes the workspace. Files and worktrees stay.
 cmd_stop() {
   load_context; require_crew
+  stop_watcher
   mux workspace_exists 2>/dev/null && mux close_workspace && ok "closed the crew's $MUX workspace"
   rm -f "$STATE/session"
   info "board, tasks, notes and worktrees are kept. crew start brings everyone back."
@@ -1466,6 +1622,7 @@ ${BOLD}Config${RESET}
   crew config init            create the global config if missing (install.sh runs this)
   crew config example         print a sample config with every setting explained
   crew doctor                 check what's installed
+  crew watch [--once]         check for stalled agents (crew start runs this in the background)
 EOF
 }
 
@@ -1486,6 +1643,7 @@ main() {
     teardown)          cmd_teardown "$@" ;;
     role|roles)        cmd_role "$@" ;;
     config)            cmd_config "$@" ;;
+    watch)             cmd_watch "$@" ;;
     doctor)            cmd_doctor "$@" ;;
     version|--version) echo "crew $CREW_VERSION" ;;
     help|-h|--help)    usage ;;

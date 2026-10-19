@@ -95,6 +95,7 @@ write_test_global_config() {
   cat > "$HOME/.config/crew/config.toml" <<EOF
 multiplexer = "tmux"
 paste_delay = 0.2
+stall_timeout = 0
 
 [agents.claude]
 command = "$WORK/bin/claude --add-dir {crew}"
@@ -240,8 +241,26 @@ if have_tmux3; then
   check "status notices a dead agent"        eventually output_has "reviewer   gemini   stopped" crew status
   check "start revives it"                   output_has "reviewer → $WORK/bin/gemini launched" crew start --no-attach
   check "revived agent is running"           eventually output_has "reviewer   gemini   running" crew status
+
+  set_repo_setting "$R" 'stall_timeout = 1'
+  crew task add "Build the thing" --owner builder >/dev/null
+  crew watch --once; sleep 2; crew watch --once
+  check "stalled agent with a task alerts the lead"  eventually file_has "$WORK/log/inbox-lead" "builder has shown no activity"
+  check "alert says what work is owed"       file_has .crew/board.md "open task(s) 1"
+  check "agents without work are left alone" sh -c "! grep -q 'lead has shown' .crew/board.md"
+  sleep 1; crew watch --once
+  check "a stall is reported only once"      test "$(grep -c 'builder has shown' "$WORK/log/inbox-lead")" -eq 1
+  crew task add "Plan the release" --owner lead >/dev/null
+  crew watch --once; sleep 2; crew watch --once
+  check "a stalled lead alerts the human"    file_has .crew/board.md "crew → human"
+  crew say builder "are you there" >/dev/null; crew watch --once
+  check "new screen activity clears a stall" eventually sh -c "test \"\$(awk '{print \$3}' .crew/state/watch-builder)\" = no"
+  check "start launches the watcher"         crew start --no-attach
+  check "watcher is running"                 sh -c "kill -0 \"\$(cat .crew/state/watch.pid)\""
+  WATCH_PID="$(cat .crew/state/watch.pid)"
   check "stop closes the session"            crew stop
   check "session is gone"                    sh -c "! tmux has-session -t '=crew-tmux' 2>/dev/null"
+  check "stop ends the watcher"              eventually sh -c "case \"\$(ps -p $WATCH_PID -o stat= 2>/dev/null)\" in ''|Z*) true ;; *) false ;; esac"
   check "teardown keeps branches"            sh -c "echo y | $CREW_RUN teardown >/dev/null && git -C '$R' show-ref -q refs/heads/crew/builder"
   check "teardown removes worktrees"         sh -c "! ls -d '$HOME'/.crew/worktrees/tmux-*/builder 2>/dev/null"
 else
