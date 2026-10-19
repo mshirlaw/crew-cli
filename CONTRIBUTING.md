@@ -4,7 +4,9 @@ Thanks for helping. crew is a small Rust program; please keep it small and reada
 
 ## Ground rules
 
-- **Small single-purpose functions, each with a one-line `///` comment** saying in plain English what it does. Command functions (`cmd_*`) should read as a list of steps.
+- **Small single-purpose functions with clear names.** Command functions should read as a list of steps.
+- **Few comments, and `//` only.** No `///` doc comments or `//!` module headers; clap help text uses `#[command(about = ...)]` and `#[arg(help = ...)]`. Comment only what the code can't say for itself: why, a constraint, a gotcha. Don't restate what a function or line does.
+- **Put code where it belongs:** `src/commands/` for command-line commands, `src/crew/` for the core, `src/mux/` for herdr and tmux, `src/util/` for small helpers. See the layout in [AGENTS.md](AGENTS.md).
 - **Few dependencies.** crew uses anyhow, chrono, clap, serde_json, shlex and toml_edit. Ask before adding another.
 - **No runtime requirements beyond git and herdr or tmux.** crew is a single binary; don't make it need Python, jq or anything else at runtime.
 - **The sample config is the template.** `crew config init` writes `config.example.toml` as it is (it's compiled in), so edit that file to change the starter config.
@@ -33,7 +35,7 @@ Add tests for any change in behaviour: a unit test next to the code for pure log
 
 ## Supporting another multiplexer
 
-Implement the `Mux` trait in `src/mux/` (see `tmux.rs`), add it to `MuxKind` in `src/config.rs`, and add tests.
+Implement the `Mux` trait in `src/mux/` (see `tmux.rs`), add it to `MuxKind` in `src/crew/config.rs`, and add tests.
 
 ## Reporting bugs
 

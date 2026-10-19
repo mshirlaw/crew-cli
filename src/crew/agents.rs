@@ -1,10 +1,7 @@
-//! Launching agents: the kickoff prompt and each agent's command line.
-
-use crate::context::Ctx;
-use crate::{ui, util};
+use super::context::Ctx;
+use crate::util::{self, ui};
 use std::fmt::Write;
 
-/// The first message an agent receives, telling it where its instructions are.
 pub fn kickoff_prompt(ctx: &Ctx, role: &str, revive: bool) -> String {
     let crew = ctx.crew.display();
     let mut msg = format!(
@@ -22,8 +19,8 @@ pub fn kickoff_prompt(ctx: &Ctx, role: &str, revive: bool) -> String {
     msg
 }
 
-/// A role's full agent command, with {crew} {repo} {role} and {prompt} filled in.
-/// The prompt is added as the last word unless the command uses {prompt}.
+// Placeholders are filled in per word, so a path with spaces stays one argument.
+// The prompt goes last unless the command places {prompt} itself.
 pub fn agent_words(ctx: &Ctx, role: &str, revive: bool) -> Vec<String> {
     let prompt = kickoff_prompt(ctx, role, revive);
     let crew = ctx.crew.display().to_string();
@@ -42,8 +39,7 @@ pub fn agent_words(ctx: &Ctx, role: &str, revive: bool) -> Vec<String> {
     words
 }
 
-/// Starts a role's agent in a pane. Leaves the pane as a shell if the agent isn't installed.
-pub fn launch_agent(ctx: &Ctx, role: &str, pane: &str, revive: bool) -> bool {
+pub fn launch(ctx: &Ctx, role: &str, pane: &str, revive: bool) -> bool {
     let words = agent_words(ctx, role, revive);
     if !util::has(&words[0]) {
         ui::warn(format!("{role}: '{}' is not installed, pane left as a shell", words[0]));

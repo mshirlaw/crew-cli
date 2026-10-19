@@ -15,10 +15,8 @@ set -eu
 REPO="mshirlaw/crew-cli"
 DEST="${CREW_BIN_DIR:-$HOME/.local/bin}"
 
-# Prints an error and exits.
 fail() { echo "✗ $*" >&2; exit 1; }
 
-# Prints the shell startup file to add PATH changes to.
 shell_rc() {
   case "$(basename "${SHELL:-bash}")" in
     zsh)  echo "$HOME/.zshrc" ;;
@@ -27,7 +25,6 @@ shell_rc() {
   esac
 }
 
-# Prints how to install a package on this system.
 install_hint() {
   if command -v brew >/dev/null 2>&1; then echo "brew install $1"
   elif command -v apt-get >/dev/null 2>&1; then echo "sudo apt install $1"
@@ -36,13 +33,12 @@ install_hint() {
   else echo "install $1 with your package manager"; fi
 }
 
-# Prints the folder this script is in, or nothing when it's piped from curl.
+# Empty when piped from curl, so the script knows there's no clone to build from.
 script_dir() {
   local src="${BASH_SOURCE[0]:-}"
   [ -n "$src" ] && [ -f "$src" ] && cd "$(dirname "$src")" && pwd
 }
 
-# Prints the release target for this OS and chip, e.g. aarch64-apple-darwin.
 target_triple() {
   case "$(uname -s)/$(uname -m)" in
     Darwin/arm64)                echo aarch64-apple-darwin ;;
@@ -53,13 +49,11 @@ target_triple() {
   esac
 }
 
-# Prints the SHA-256 of a file.
 sha256_of() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
   else shasum -a 256 "$1" | cut -d' ' -f1; fi
 }
 
-# Downloads the prebuilt binary for this machine, checks its checksum, and installs it.
 download_and_install() {
   local target base tmp
   command -v curl >/dev/null 2>&1 || fail "curl is needed to download crew: $(install_hint curl)"
@@ -78,14 +72,12 @@ download_and_install() {
   rm -rf "$tmp"
 }
 
-# Builds crew from this clone with cargo and installs it.
 build_and_install() {
   echo "• building crew with cargo (this takes a minute the first time)"
   cargo build --release --quiet --manifest-path "$1/Cargo.toml"
   install -m 755 "$1/target/release/crew" "$DEST/crew"
 }
 
-# Installs crew from a given binary, this clone, or a GitHub release.
 install_crew() {
   local here
   here="$(script_dir || true)"
@@ -100,7 +92,6 @@ install_crew() {
   echo "✓ installed $("$DEST/crew" version) to $DEST/crew"
 }
 
-# Removes crew and says what was left behind.
 uninstall_crew() {
   rm -f "$DEST/crew"
   echo "✓ removed $DEST/crew"
@@ -110,7 +101,6 @@ uninstall_crew() {
   echo "  .crew/ in each repo          boards, tasks and notes"
 }
 
-# Warns about anything crew needs that isn't installed or on the PATH.
 check_requirements() {
   case ":$PATH:" in
     *":$DEST:"*) ;;

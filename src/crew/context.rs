@@ -1,9 +1,8 @@
-//! Where the crew lives: the repo, its .crew folder, the config, the session state and the multiplexer.
-
-use crate::config::Config;
+use super::config::Config;
+use super::state::State;
+use super::upgrade;
 use crate::mux::{self, Mux};
-use crate::state::State;
-use crate::{setup, util};
+use crate::util;
 use anyhow::{anyhow, bail, Result};
 use std::path::{Path, PathBuf};
 
@@ -17,7 +16,7 @@ pub struct Ctx {
 }
 
 impl Ctx {
-    /// Finds the repo and its .crew folder, upgrades files from older versions, and loads the config.
+    // CREW_DIR is set in every agent pane, so `crew` finds the shared folder from any worktree.
     pub fn load() -> Result<Ctx> {
         let (root, crew) = if let Some(crew) = std::env::var_os("CREW_DIR").map(PathBuf::from).filter(|d| d.is_dir()) {
             (crew.parent().map(Path::to_path_buf).unwrap_or_default(), crew)
@@ -26,21 +25,19 @@ impl Ctx {
             let crew = root.join(".crew");
             (root, crew)
         };
-        setup::migrate_old_roster(&crew)?;
+        upgrade::migrate_old_roster(&crew)?;
         let config = Config::load(Some(crew.join("config.toml")))?;
         let mux = mux::make(config.multiplexer()?);
         let slug = slugify(&root.file_name().unwrap_or_default().to_string_lossy());
         Ok(Ctx { state: State::new(crew.join("state")), root, crew, slug, config, mux })
     }
 
-    /// Reloads the config after it changed on disk.
     pub fn reload(&mut self) -> Result<()> {
         self.config = Config::load(Some(self.crew.join("config.toml")))?;
         self.mux = mux::make(self.config.multiplexer()?);
         Ok(())
     }
 
-    /// Fails with a hint if this repo has no crew yet.
     pub fn require_crew(&self) -> Result<()> {
         if !self.crew.join("config.toml").is_file() {
             bail!("no crew here yet. Run: crew setup");
@@ -48,23 +45,20 @@ impl Ctx {
         Ok(())
     }
 
-    /// Role names, in config order.
     pub fn roles(&self) -> Vec<String> {
         self.config.roles()
     }
 
-    /// Succeeds if the role is in the repo config.
     pub fn role_exists(&self, role: &str) -> bool {
         self.roles().iter().any(|r| r == role)
     }
 
-    /// The folder this repo's worktrees go in, e.g. ~/.crew/worktrees/my-app-1a2b3c.
+    // e.g. ~/.crew/worktrees/my-app-1a2b3c. The hash keeps two repos with the same name apart.
     pub fn worktree_base(&self) -> PathBuf {
         let id = &util::fingerprint(&self.root.to_string_lossy())[..6];
         self.config.worktree_dir().join(format!("{}-{id}", self.slug))
     }
 
-    /// The folder a role works in: its worktree, or the main checkout.
     pub fn role_dir(&self, role: &str) -> PathBuf {
         if self.config.role_has_worktree(role) {
             self.worktree_base().join(role)
@@ -73,12 +67,10 @@ impl Ctx {
         }
     }
 
-    /// The herdr agent name for a role, e.g. my-app-builder.
     pub fn agent_name(&self, role: &str) -> String {
         format!("{}-{role}", self.slug)
     }
 
-    /// The branch the crew merges into.
     pub fn base_branch(&self) -> String {
         self.config
             .base_branch()
@@ -87,13 +79,12 @@ impl Ctx {
             .unwrap_or_else(|| "main".to_string())
     }
 
-    /// Path of a file in .crew.
     pub fn file(&self, name: &str) -> PathBuf {
         self.crew.join(name)
     }
 }
 
-/// The main checkout's root folder, even when run from a worktree.
+// The main checkout's root, even when run from a worktree.
 pub fn repo_root() -> Option<PathBuf> {
     let out = util::run_out("git", &["rev-parse", "--git-common-dir"])?;
     let common = PathBuf::from(out.trim());
@@ -101,7 +92,7 @@ pub fn repo_root() -> Option<PathBuf> {
     std::fs::canonicalize(common).ok()?.parent().map(Path::to_path_buf)
 }
 
-/// Turns a folder name into a short lowercase id usable in agent and session names.
+// Short and safe for agent and tmux session names.
 pub fn slugify(name: &str) -> String {
     let mapped: String =
         name.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect();

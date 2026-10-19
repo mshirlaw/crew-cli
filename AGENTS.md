@@ -8,29 +8,36 @@ Guidance for AI coding agents (and humans) working on this repo: what crew is, h
 
 ## Layout
 
-| Path | What it is |
-|---|---|
-| `src/main.rs` | command-line interface (clap) and dispatch |
-| `src/context.rs` | finds the repo and `.crew/`, loads config, picks the multiplexer |
-| `src/config.rs` | global + repo TOML config (toml_edit), role and agent settings |
-| `src/mux/` | the `Mux` trait plus `herdr.rs` and `tmux.rs` |
-| `src/lifecycle.rs` | start, revive, restart, stop, teardown, worktrees |
-| `src/agents.rs` | kickoff prompt and each agent's command line |
-| `src/board.rs` | `crew say`, the board, unanswered-message detection |
-| `src/tasks.rs` | `crew task`, `tasks.tsv` + generated `tasks.md`, file lock |
-| `src/watch.rs` | stall watcher |
-| `src/roles.rs`, `src/setup.rs`, `src/commands.rs` | role commands; setup and PROTOCOL.md; status, doctor, config |
-| `src/templates/` | role instructions and protocol rules (markdown, compiled in) |
-| `config.example.toml` | sample global config; compiled in and written by `crew config init` |
-| `install.sh` | bash installer: downloads a release binary, or builds from a clone |
-| `test/run.sh` | end-to-end tests (stand-in agents, real tmux, fake herdr) |
-| `.github/workflows/` | `test.yml` (fmt, clippy, unit, shellcheck, end-to-end on Linux and macOS), `release.yml` |
+```
+src/
+  main.rs        entry point: parses the command line and dispatches
+  cli.rs         the command-line definition (clap)
+  commands/      one file per command group: setup, session (start/restart/stop/teardown),
+                 say (say, board), task, role, config, status (status, doctor); watch is in mod.rs
+  crew/          the core, with no command-line concerns:
+                   context   finds the repo and .crew/, loads config, picks the multiplexer
+                   config    global + repo TOML (toml_edit), role and agent settings
+                   state     session ids in .crew/state/session
+                   panes     building and reviving the crew's panes
+                   agents    kickoff prompt and each agent's command line
+                   board     posting messages, unanswered-message detection
+                   tasks     tasks.tsv store, lock, generated tasks.md
+                   watcher   stall detection and the background watcher
+                   worktree, protocol, templates (+ templates/*.md), upgrade (older versions)
+  mux/           the Mux trait, herdr.rs and tmux.rs
+  util/          ui (output), process, files, text
+```
+
+Commands call into `crew/` and print results; `crew/` never parses arguments. New code goes in the folder that matches what it is, not wherever is convenient.
+
+Other files: `config.example.toml` (sample global config, compiled in and written by `crew config init`), `install.sh` (bash installer), `test/run.sh` (end-to-end tests: stand-in agents, real tmux, fake herdr), `.github/workflows/` (`test.yml`, `release.yml`).
 
 In a repo where crew runs, everything lives in `.crew/`: `config.toml`, `roles/*.md`, `PROTOCOL.md` (generated), `board.md`, `tasks.tsv` with `tasks.md` (generated), `notes/`, and `state/` (session ids, watcher pid, task lock).
 
 ## Rules for changing crew
 
-- **Small single-purpose functions, each with a one-line plain-English `///` comment.** Command functions (`cmd_*`) should read as a list of steps.
+- **Comments: `//` only, and only when they earn their place.** The human dislikes `///` doc comments and `//!` module headers, so don't use them. clap help text is written with `#[command(about = ...)]` and `#[arg(help = ...)]` attributes, not `///`. Write a comment only to say something the code can't: why something is done, a non-obvious constraint, a gotcha (e.g. "write then rename, so a reader never sees a half-written file"). Never restate a function's name or narrate what the next line does. Prefer a clearer name to a comment. The same goes for the shell scripts.
+- **Small single-purpose functions** with names that say what they do. Command functions should read as a list of steps.
 - **clippy runs with the `pedantic` group on** (set in `Cargo.toml`), and CI treats every warning as an error. Fix the code rather than adding `allow`s; if an `allow` is truly needed, put it on the smallest item with a comment saying why.
 - **Before committing:** `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `test/run.sh`, `shellcheck install.sh test/run.sh`. CI runs all of them.
 - **Add tests for behaviour changes:** unit tests for pure logic, a `check` line in `test/run.sh` for anything visible from the command line.
@@ -42,6 +49,7 @@ In a repo where crew runs, everything lives in `.crew/`: `config.toml`, `roles/*
 These were settled while building crew. Don't reverse one without a good reason, and record any new decision here.
 
 ### Shape of the tool
+- **Code style changed during the Rust port.** The bash version had a one-line comment on every function, at the human's request. In Rust they found that noisy (and dislike `///`), so the rule is now: `//` only, comments only where they explain something the code can't, and `src/` organised into `commands/`, `crew/`, `mux/` and `util/` rather than one flat folder.
 - **Rust, as a single binary.** crew started as a bash script. At ~1,500 lines it was mostly working around bash: a hand-written TOML subset parser, JSON through jq or python3, `mkdir` locks, a bash 3.2 floor, a nohup'd watcher loop. With no users yet, the rewrite cost nothing to anyone. Rust over Go because herdr is Rust and the human chose it. Releases ship static binaries for macOS (arm64, x86_64) and Linux musl (x86_64, aarch64), so they also run on older systems like Raspberry Pi OS.
 - **The installer stays in bash.** It has to run before crew exists, and `curl | bash` needs a shell script.
 - **Named `crew`.** It's a command people type.

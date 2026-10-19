@@ -1,6 +1,3 @@
-//! Session state: "key value" lines in .crew/state/session, recording the multiplexer,
-//! the workspace and each role's pane.
-
 use std::path::{Path, PathBuf};
 
 pub struct State {
@@ -8,22 +5,18 @@ pub struct State {
 }
 
 impl State {
-    /// Opens the state kept in a folder.
     pub fn new(dir: PathBuf) -> State {
         State { dir }
     }
 
-    /// The state folder (also holds the watcher's files and the task lock).
     pub fn dir(&self) -> &Path {
         &self.dir
     }
 
-    /// The file holding the key-value pairs.
     fn file(&self) -> PathBuf {
         self.dir.join("session")
     }
 
-    /// Returns the saved value for a key.
     pub fn get(&self, key: &str) -> Option<String> {
         let text = std::fs::read_to_string(self.file()).ok()?;
         text.lines().find_map(|line| {
@@ -32,7 +25,7 @@ impl State {
         })
     }
 
-    /// Saves a value for a key, or removes the key when the value is empty.
+    // An empty value removes the key.
     pub fn set(&self, key: &str, value: &str) {
         let _ = std::fs::create_dir_all(&self.dir);
         let text = std::fs::read_to_string(self.file()).unwrap_or_default();
@@ -49,7 +42,6 @@ impl State {
         let _ = crate::util::write_atomic(&self.file(), &out);
     }
 
-    /// Forgets the whole session.
     pub fn clear(&self) {
         let _ = std::fs::remove_file(self.file());
     }

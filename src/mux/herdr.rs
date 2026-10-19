@@ -1,22 +1,16 @@
-//! herdr backend. Uses herdr's CLI, which shows agent state and can tell when an agent is busy.
-
 use super::{Direction, Mux};
-use crate::context::Ctx;
-use crate::ui;
+use crate::crew::context::Ctx;
+use crate::util::ui;
 use crate::util::{has, run_all, run_ok, run_out, shell_join, spawn_detached};
 use anyhow::{bail, Result};
 use std::ffi::OsStr;
 use std::path::Path;
 
 pub struct Herdr;
-
-/// Reads the string at a JSON pointer like /`result/pane/pane_id` from herdr's output.
 fn json_field(output: &str, pointer: &str) -> Option<String> {
     let value: serde_json::Value = serde_json::from_str(output.trim()).ok()?;
     value.pointer(pointer)?.as_str().map(String::from)
 }
-
-/// The --env arguments that tell a pane which crew and role it belongs to.
 fn env_args(ctx: &Ctx, role: &str) -> Vec<String> {
     vec!["--env".into(), format!("CREW_DIR={}", ctx.crew.display()), "--env".into(), format!("CREW_ROLE={role}")]
 }

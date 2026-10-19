@@ -1,26 +1,24 @@
-//! The stall watcher. An agent is stalled when it owes work (an open task or an unanswered message)
-//! and its screen hasn't changed for `stall_timeout` seconds. The lead is told once per stall;
-//! if the lead itself is stalled, the human is told instead.
+// An agent is stalled when it owes work (an open task or an unanswered message) and its screen
+// hasn't changed for stall_timeout seconds. The lead is told once per stall; if the lead is the
+// one stalled, the human is told instead.
 
-use crate::context::Ctx;
-use crate::{board, tasks, ui, util};
+use super::context::Ctx;
+use super::{board, tasks};
+use crate::util::{self, ui};
 use anyhow::Result;
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// What the watcher remembers about a role between checks.
 struct Seen {
     fingerprint: String,
     changed_at: u64,
     notified: bool,
 }
 
-/// The file a role's watch record is kept in.
 fn seen_file(ctx: &Ctx, role: &str) -> PathBuf {
     ctx.state.dir().join(format!("watch-{role}"))
 }
 
-/// Reads a role's watch record.
 fn read_seen(ctx: &Ctx, role: &str) -> Option<Seen> {
     let text = std::fs::read_to_string(seen_file(ctx, role)).ok()?;
     let mut parts = text.split_whitespace();
@@ -31,16 +29,14 @@ fn read_seen(ctx: &Ctx, role: &str) -> Option<Seen> {
     })
 }
 
-/// Saves a role's watch record.
 fn write_seen(ctx: &Ctx, role: &str, seen: &Seen) {
     let notified = if seen.notified { "yes" } else { "no" };
     let _ = std::fs::create_dir_all(ctx.state.dir());
     let _ = std::fs::write(seen_file(ctx, role), format!("{} {} {notified}\n", seen.fingerprint, seen.changed_at));
 }
 
-/// Why a role owes work, or None if it doesn't.
 fn owed_work(ctx: &Ctx, role: &str) -> Option<String> {
-    let open: Vec<String> = tasks::open_tasks(ctx, role).iter().map(u32::to_string).collect();
+    let open: Vec<String> = tasks::open_for(ctx, role).iter().map(u32::to_string).collect();
     let board_text = std::fs::read_to_string(ctx.file("board.md")).unwrap_or_default();
     let unanswered = board::has_unanswered_message(&board_text, role);
     match (open.is_empty(), unanswered) {
@@ -51,12 +47,10 @@ fn owed_work(ctx: &Ctx, role: &str) -> Option<String> {
     }
 }
 
-/// Checks one role and raises an alert if it has just stalled.
 fn check_role(ctx: &Ctx, role: &str) -> Result<()> {
     let now = util::now_secs();
     let fingerprint = util::fingerprint(&ctx.mux.screen(ctx, role));
-    let seen = read_seen(ctx, role);
-    let Some(seen) = seen.filter(|s| s.fingerprint == fingerprint) else {
+    let Some(seen) = read_seen(ctx, role).filter(|s| s.fingerprint == fingerprint) else {
         write_seen(ctx, role, &Seen { fingerprint, changed_at: now, notified: false });
         return Ok(());
     };
@@ -74,7 +68,6 @@ fn check_role(ctx: &Ctx, role: &str) -> Result<()> {
     raise_alert(ctx, role, &owed, idle)
 }
 
-/// Tells the lead (or the human, if the lead is the one stalled) that a role looks stuck.
 fn raise_alert(ctx: &Ctx, role: &str, owed: &str, idle: u64) -> Result<()> {
     let text = format!(
         "{role} has shown no activity for {} but has {owed}. It may be out of tokens, waiting for an approval, or stuck.",
@@ -101,28 +94,24 @@ fn raise_alert(ctx: &Ctx, role: &str, owed: &str, idle: u64) -> Result<()> {
     Ok(())
 }
 
-/// Checks every role once.
-pub fn watch_once(ctx: &Ctx) -> Result<()> {
+pub fn check_all(ctx: &Ctx) -> Result<()> {
     for role in ctx.roles() {
         check_role(ctx, &role)?;
     }
     Ok(())
 }
 
-/// The file holding the background watcher's process id.
 fn pid_file(ctx: &Ctx) -> PathBuf {
     ctx.state.dir().join("watch.pid")
 }
 
-/// The background watcher's process id, if it's running.
-fn watcher_pid(ctx: &Ctx) -> Option<String> {
+fn running_pid(ctx: &Ctx) -> Option<String> {
     let pid = std::fs::read_to_string(pid_file(ctx)).ok()?.trim().to_string();
     util::run_ok("kill", &["-0", &pid]).then_some(pid)
 }
 
-/// Starts the watcher in the background unless it's turned off or already running.
-pub fn start_watcher(ctx: &Ctx) -> Result<()> {
-    if ctx.config.stall_timeout() == 0 || watcher_pid(ctx).is_some() {
+pub fn start(ctx: &Ctx) -> Result<()> {
+    if ctx.config.stall_timeout() == 0 || running_pid(ctx).is_some() {
         return Ok(());
     }
     for role in ctx.roles() {
@@ -140,28 +129,21 @@ pub fn start_watcher(ctx: &Ctx) -> Result<()> {
     Ok(())
 }
 
-/// Stops the background watcher.
-pub fn stop_watcher(ctx: &Ctx) {
-    if let Some(pid) = watcher_pid(ctx) {
+pub fn stop(ctx: &Ctx) {
+    if let Some(pid) = running_pid(ctx) {
         util::run_ok("kill", &[pid.as_str()]);
     }
     let _ = std::fs::remove_file(pid_file(ctx));
 }
 
-/// crew watch [--once]: checks for stalled agents every `watch_interval` seconds until the crew stops.
-pub fn cmd_watch(ctx: &Ctx, once: bool) -> Result<()> {
-    ctx.require_crew()?;
-    if once {
-        return watch_once(ctx);
-    }
+// Exits when crew stop removes the pid file, another watcher takes over, or the session has gone.
+pub fn run(ctx: &Ctx) {
     let me = std::process::id().to_string();
     let mut misses = 0;
     let mut first = true;
     while misses < 3 {
-        // Stop if crew stop removed our pid file, or another watcher replaced us. On the first
-        // check the file may not be written yet, because crew start writes it just after starting us.
-        let owner = std::fs::read_to_string(pid_file(ctx)).ok().map(|s| s.trim().to_string());
-        match owner {
+        // crew start writes the pid file just after starting us, so it may be missing on the first pass.
+        match std::fs::read_to_string(pid_file(ctx)).ok().map(|s| s.trim().to_string()) {
             Some(pid) if pid != me => break,
             None if !first => break,
             _ => {}
@@ -169,7 +151,7 @@ pub fn cmd_watch(ctx: &Ctx, once: bool) -> Result<()> {
         first = false;
         if ctx.mux.ready(ctx) {
             misses = 0;
-            if let Err(e) = watch_once(ctx) {
+            if let Err(e) = check_all(ctx) {
                 ui::warn(format!("watch: {e:#}"));
             }
         } else {
@@ -177,5 +159,4 @@ pub fn cmd_watch(ctx: &Ctx, once: bool) -> Result<()> {
         }
         std::thread::sleep(Duration::from_secs(ctx.config.watch_interval()));
     }
-    Ok(())
 }

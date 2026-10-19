@@ -1,22 +1,12 @@
-//! crew role: list, show, add, edit, change, remove and save roles.
-
-use crate::config::util_first_installed;
-use crate::context::Ctx;
-use crate::{lifecycle, setup, templates, ui, util};
+use crate::crew::config::first_installed;
+use crate::crew::context::Ctx;
+use crate::crew::{panes, protocol, templates};
+use crate::util::{self, ui};
 use anyhow::{bail, Result};
 
-/// Succeeds if a role name is lowercase letters, digits and dashes, starting with a letter, 15 chars max.
-pub fn valid_role_name(name: &str) -> bool {
-    let mut chars = name.chars();
-    chars.next().is_some_and(|c| c.is_ascii_lowercase())
-        && name.len() <= 15
-        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-}
-
-/// Prints the roles as a table.
-pub fn cmd_list(ctx: &Ctx) -> Result<()> {
+pub fn list(ctx: &Ctx) -> Result<()> {
     ctx.require_crew()?;
-    println!("{}", ui::bold(&format!("{:<10} {:<8} {:<9} {}", "ROLE", "AGENT", "WORKTREE", "ROLE FILE")));
+    println!("{}", ui::bold(&format!("{:<10} {:<8} {:<9} ROLE FILE", "ROLE", "AGENT", "WORKTREE")));
     for role in ctx.roles() {
         let worktree = if ctx.config.role_has_worktree(&role) { "yes" } else { "no" };
         println!("{role:<10} {:<8} {worktree:<9} .crew/roles/{role}.md", ctx.config.role_agent(&role));
@@ -24,15 +14,13 @@ pub fn cmd_list(ctx: &Ctx) -> Result<()> {
     Ok(())
 }
 
-/// Prints a role's instructions.
-pub fn cmd_show(ctx: &Ctx, role: &str) -> Result<()> {
+pub fn show(ctx: &Ctx, role: &str) -> Result<()> {
     require_role(ctx, role)?;
     print!("{}", std::fs::read_to_string(ctx.file(&format!("roles/{role}.md")))?);
     Ok(())
 }
 
-/// Adds a role, optionally copying another role's instructions.
-pub fn cmd_add(ctx: &mut Ctx, role: &str, agent: Option<&str>, worktree: bool, like: Option<&str>) -> Result<()> {
+pub fn add(ctx: &mut Ctx, role: &str, agent: Option<&str>, worktree: bool, like: Option<&str>) -> Result<()> {
     ctx.require_crew()?;
     if !valid_role_name(role) {
         bail!("role names are lowercase letters, digits and dashes, starting with a letter, 15 characters max");
@@ -40,17 +28,16 @@ pub fn cmd_add(ctx: &mut Ctx, role: &str, agent: Option<&str>, worktree: bool, l
     if ctx.role_exists(role) {
         bail!("role '{role}' already exists");
     }
-    let agent = agent.map_or_else(|| util_first_installed(&["claude", "codex", "gemini"]), String::from);
+    let agent = agent.map_or_else(|| first_installed(&["claude", "codex", "gemini"]), String::from);
     ctx.config.set_role(role, Some(&agent), Some(worktree))?;
     ctx.reload()?;
     write_new_role_file(ctx, role, like)?;
-    setup::write_protocol(ctx)?;
+    protocol::write(ctx)?;
     ui::ok(format!("added {role} ({agent}, worktree: {worktree})"));
     ui::info(format!("describe it: crew role edit {role}   then bring it online: crew start"));
     Ok(())
 }
 
-/// Writes a new role's file, copied from another role if one was given.
 fn write_new_role_file(ctx: &Ctx, role: &str, like: Option<&str>) -> Result<()> {
     let source = like.and_then(|other| std::fs::read_to_string(ctx.file(&format!("roles/{other}.md"))).ok());
     let text = match source {
@@ -68,8 +55,8 @@ fn write_new_role_file(ctx: &Ctx, role: &str, like: Option<&str>) -> Result<()> 
     Ok(())
 }
 
-/// Opens a role's file in your editor, then tells the running agent to re-read it.
-pub fn cmd_edit(ctx: &Ctx, role: &str) -> Result<()> {
+// After editing, a running agent is told to re-read its role so the change takes effect now.
+pub fn edit(ctx: &Ctx, role: &str) -> Result<()> {
     require_role(ctx, role)?;
     let path = ctx.file(&format!("roles/{role}.md"));
     util::edit_file(&path)?;
@@ -83,12 +70,8 @@ pub fn cmd_edit(ctx: &Ctx, role: &str) -> Result<()> {
     Ok(())
 }
 
-/// Changes a role's settings, e.g. agent=codex worktree=no.
-pub fn cmd_set(ctx: &mut Ctx, role: &str, changes: &[String]) -> Result<()> {
+pub fn set(ctx: &mut Ctx, role: &str, changes: &[String]) -> Result<()> {
     require_role(ctx, role)?;
-    if changes.is_empty() {
-        bail!("usage: crew role set <role> agent=<x> worktree=<yes|no>");
-    }
     let mut agent = None;
     let mut worktree = None;
     for change in changes {
@@ -100,27 +83,27 @@ pub fn cmd_set(ctx: &mut Ctx, role: &str, changes: &[String]) -> Result<()> {
     }
     ctx.config.set_role(role, agent.as_deref(), worktree)?;
     ctx.reload()?;
-    setup::write_protocol(ctx)?;
+    protocol::write(ctx)?;
     ui::ok(format!("{role} → agent {}, worktree {}", ctx.config.role_agent(role), ctx.config.role_has_worktree(role)));
     ui::info(format!("apply it with: crew restart {role}"));
     Ok(())
 }
 
-/// Removes a role and closes its pane. Its file, worktree and branch are kept.
-pub fn cmd_rm(ctx: &mut Ctx, role: &str) -> Result<()> {
+// The role's file, worktree and branch are kept.
+pub fn rm(ctx: &mut Ctx, role: &str) -> Result<()> {
     require_role(ctx, role)?;
     if ctx.mux.ready(ctx) {
-        lifecycle::close_role_pane(ctx, role);
+        panes::close(ctx, role);
     }
     ctx.config.remove_role(role)?;
     ctx.reload()?;
-    setup::write_protocol(ctx)?;
+    protocol::write(ctx)?;
     ui::ok(format!("removed {role} (its role file, worktree and branch are kept)"));
     Ok(())
 }
 
-/// Saves a role's instructions, or all of this repo's roles, as your defaults for new repos.
-pub fn cmd_save(ctx: &mut Ctx, role: Option<&str>) -> Result<()> {
+// With a role, saves that role's instructions; without one, saves all of this repo's roles.
+pub fn save(ctx: &mut Ctx, role: Option<&str>) -> Result<()> {
     ctx.require_crew()?;
     let Some(role) = role else {
         ctx.config.save_roles_to_global()?;
@@ -141,13 +124,20 @@ pub fn cmd_save(ctx: &mut Ctx, role: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// Fails unless the crew is set up and has this role.
 fn require_role(ctx: &Ctx, role: &str) -> Result<()> {
     ctx.require_crew()?;
     if !ctx.role_exists(role) {
         bail!("no role '{role}' (roles: {})", ctx.roles().join(" "));
     }
     Ok(())
+}
+
+// Role names end up in TOML keys, branch names and herdr agent names.
+fn valid_role_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars.next().is_some_and(|c| c.is_ascii_lowercase())
+        && name.len() <= 15
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
 #[cfg(test)]

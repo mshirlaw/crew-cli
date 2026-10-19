@@ -1,12 +1,13 @@
-//! Settings from ~/.config/crew/config.toml (global) and .crew/config.toml (repo; wins over global).
-//! Files are edited with `toml_edit` so comments and ordering survive.
+// Settings come from ~/.config/crew/config.toml and .crew/config.toml; the repo file wins.
+// toml_edit keeps comments and ordering when crew edits the files.
 
-use crate::{templates, ui, util};
+use super::templates;
+use crate::util::{self, ui};
 use anyhow::{anyhow, bail, Context, Result};
 use std::path::{Path, PathBuf};
 use toml_edit::{DocumentMut, Item, Table};
 
-/// Agent kinds herdr can start and track itself (from herdr 0.9.5). Override per agent with `kind`.
+// From herdr 0.9.5. These get herdr's own agent tracking; override per agent with `kind`.
 pub const HERDR_KINDS: &[&str] = &[
     "pi",
     "claude",
@@ -34,7 +35,6 @@ pub const HERDR_KINDS: &[&str] = &[
     "muse",
 ];
 
-/// Which terminal multiplexer runs the agents.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MuxKind {
     Herdr,
@@ -42,7 +42,6 @@ pub enum MuxKind {
 }
 
 impl MuxKind {
-    /// The name used in config files.
     pub fn name(self) -> &'static str {
         match self {
             MuxKind::Herdr => "herdr",
@@ -50,7 +49,6 @@ impl MuxKind {
         }
     }
 
-    /// herdr if it's installed, otherwise tmux if that is, otherwise herdr.
     pub fn detect() -> MuxKind {
         if !util::has("herdr") && util::has("tmux") {
             MuxKind::Tmux
@@ -68,7 +66,6 @@ pub struct Config {
 }
 
 impl Config {
-    /// Loads the global config and, if a path is given, the repo config. Missing files count as empty.
     pub fn load(repo_path: Option<PathBuf>) -> Result<Config> {
         let global_path = util::crew_home().join("config.toml");
         let global = parse_file(&global_path)?;
@@ -79,28 +76,23 @@ impl Config {
         Ok(Config { global_path, repo_path, global, repo })
     }
 
-    /// Finds a setting, looking in the repo config first, then the global one.
     fn item(&self, path: &[&str]) -> Option<&Item> {
         lookup(&self.repo, path).or_else(|| lookup(&self.global, path))
     }
 
-    /// Reads a text setting.
     pub fn string(&self, path: &[&str]) -> Option<String> {
         self.item(path)?.as_str().map(String::from)
     }
 
-    /// Reads a true/false setting.
     fn boolean(&self, path: &[&str]) -> Option<bool> {
         self.item(path)?.as_bool()
     }
 
-    /// Reads a number setting, whole or decimal.
     fn number(&self, path: &[&str]) -> Option<f64> {
         let item = self.item(path)?;
         item.as_float().or_else(|| item.as_integer().and_then(|n| i32::try_from(n).ok()).map(f64::from))
     }
 
-    /// The configured multiplexer (default herdr).
     pub fn multiplexer(&self) -> Result<MuxKind> {
         match self.item(&["multiplexer"]) {
             None => Ok(MuxKind::Herdr),
@@ -115,17 +107,14 @@ impl Config {
         }
     }
 
-    /// The worktree folder setting as written (default ~/.crew/worktrees).
     pub fn worktree_dir_text(&self) -> String {
         self.string(&["worktree_dir"]).unwrap_or_else(|| "~/.crew/worktrees".to_string())
     }
 
-    /// The folder agent worktrees go in.
     pub fn worktree_dir(&self) -> PathBuf {
         util::expand_home(&self.worktree_dir_text())
     }
 
-    /// Seconds between pasting a message and pressing Enter in tmux (default 0.3).
     pub fn paste_delay(&self) -> f64 {
         match self.number(&["paste_delay"]) {
             Some(n) if n >= 0.0 => n,
@@ -137,7 +126,6 @@ impl Config {
         }
     }
 
-    /// Seconds of no screen change before an agent that owes work counts as stalled (default 600; 0 is off).
     pub fn stall_timeout(&self) -> u64 {
         match self.item(&["stall_timeout"]).map(Item::as_integer) {
             None => 600,
@@ -148,7 +136,6 @@ impl Config {
         }
     }
 
-    /// Seconds between stall checks (default 30).
     pub fn watch_interval(&self) -> u64 {
         self.item(&["watch_interval"])
             .and_then(Item::as_integer)
@@ -157,32 +144,29 @@ impl Config {
             .unwrap_or(30)
     }
 
-    /// The branch the crew merges into, if set.
     pub fn base_branch(&self) -> Option<String> {
         self.string(&["base_branch"])
     }
 
-    /// Role names in the order they appear in the repo config.
+    // Only the repo file defines a repo's roles; global roles are a template for `crew setup`.
     pub fn roles(&self) -> Vec<String> {
         roles_in(&self.repo)
     }
 
-    /// Succeeds if the global config defines any roles.
     pub fn global_has_roles(&self) -> bool {
         !roles_in(&self.global).is_empty()
     }
 
-    /// The agent that plays a role (default: the first of claude, codex, gemini that's installed).
     pub fn role_agent(&self, role: &str) -> String {
-        self.string(&["roles", role, "agent"]).unwrap_or_else(|| util_first_installed(&["claude", "codex", "gemini"]))
+        self.string(&["roles", role, "agent"]).unwrap_or_else(|| first_installed(&["claude", "codex", "gemini"]))
     }
 
-    /// Succeeds if a role works in its own worktree (default yes).
     pub fn role_has_worktree(&self, role: &str) -> bool {
         self.boolean(&["roles", role, "worktree"]).unwrap_or(true)
     }
 
-    /// An agent's launch command as words, before placeholders are filled in.
+    // Words before placeholders are filled in. A string command is split shell-style first,
+    // so a quoted path with spaces stays one word.
     pub fn agent_command(&self, agent: &str) -> Vec<String> {
         let words = match self.item(&["agents", agent, "command"]) {
             Some(item) => match (item.as_array(), item.as_str()) {
@@ -201,7 +185,7 @@ impl Config {
         }
     }
 
-    /// The herdr kind for an agent, or None if herdr should just type the command.
+    // None means herdr should just type the command into the pane.
     pub fn agent_kind(&self, agent: &str) -> Option<String> {
         match self.string(&["agents", agent, "kind"]) {
             Some(kind) => (!kind.is_empty()).then_some(kind),
@@ -209,7 +193,6 @@ impl Config {
         }
     }
 
-    /// Sets a role's agent and/or worktree setting in the repo config, adding the role if needed.
     pub fn set_role(&mut self, role: &str, agent: Option<&str>, worktree: Option<bool>) -> Result<()> {
         let roles = self.repo.entry("roles").or_insert_with(|| {
             let mut table = Table::new();
@@ -229,7 +212,6 @@ impl Config {
         self.save_repo()
     }
 
-    /// Removes a role from the repo config.
     pub fn remove_role(&mut self, role: &str) -> Result<()> {
         if let Some(roles) = self.repo.get_mut("roles").and_then(Item::as_table_like_mut) {
             roles.remove(role);
@@ -237,12 +219,10 @@ impl Config {
         self.save_repo()
     }
 
-    /// The roles in the global config, as TOML text.
     pub fn global_roles_text(&self) -> String {
         roles_only(&self.global)
     }
 
-    /// Replaces the global config's roles with this repo's, creating the global config if needed.
     pub fn save_roles_to_global(&mut self) -> Result<()> {
         if !self.global_path.exists() {
             write_global_config(&self.global_path, MuxKind::detect())?;
@@ -256,14 +236,12 @@ impl Config {
         Ok(())
     }
 
-    /// Writes the repo config back to its file.
     fn save_repo(&self) -> Result<()> {
         let path = self.repo_path.as_ref().ok_or_else(|| anyhow!("no repo config to save"))?;
         util::write_atomic(path, &self.repo.to_string())
     }
 }
 
-/// Writes the starter global config with the given multiplexer.
 pub fn write_global_config(path: &Path, mux: MuxKind) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("could not create {}", dir.display()))?;
@@ -273,7 +251,10 @@ pub fn write_global_config(path: &Path, mux: MuxKind) -> Result<()> {
     util::write_atomic(path, &text)
 }
 
-/// Reads and parses a TOML file; a missing file is an empty config.
+pub fn first_installed(programs: &[&str]) -> String {
+    programs.iter().find(|p| util::has(p)).unwrap_or(&programs[0]).to_string()
+}
+
 fn parse_file(path: &Path) -> Result<DocumentMut> {
     match std::fs::read_to_string(path) {
         Ok(text) => text.parse::<DocumentMut>().map_err(|e| anyhow!("{} is not valid TOML:\n{e}", util::tilde(path))),
@@ -282,7 +263,6 @@ fn parse_file(path: &Path) -> Result<DocumentMut> {
     }
 }
 
-/// Follows a dotted path like roles.lead.agent through a document.
 fn lookup<'a>(doc: &'a DocumentMut, path: &[&str]) -> Option<&'a Item> {
     let mut item = doc.as_item();
     for key in path {
@@ -291,7 +271,6 @@ fn lookup<'a>(doc: &'a DocumentMut, path: &[&str]) -> Option<&'a Item> {
     Some(item)
 }
 
-/// Role names in a document, in order.
 fn roles_in(doc: &DocumentMut) -> Vec<String> {
     doc.get("roles")
         .and_then(Item::as_table_like)
@@ -299,7 +278,6 @@ fn roles_in(doc: &DocumentMut) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// A document's [roles.*] sections as TOML text.
 fn roles_only(doc: &DocumentMut) -> String {
     let mut only = DocumentMut::new();
     if let Some(roles) = doc.get("roles") {
@@ -308,7 +286,6 @@ fn roles_only(doc: &DocumentMut) -> String {
     only.to_string()
 }
 
-/// The built-in launch command for the agents crew knows.
 fn default_command(agent: &str) -> Vec<String> {
     let text = match agent {
         "claude" => "claude --add-dir {crew}",
@@ -319,16 +296,10 @@ fn default_command(agent: &str) -> Vec<String> {
     text.split_whitespace().map(String::from).collect()
 }
 
-/// The first program in the list that's installed, or the first one if none are.
-pub fn util_first_installed(programs: &[&str]) -> String {
-    programs.iter().find(|p| util::has(p)).unwrap_or(&programs[0]).to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Builds a config from text instead of files.
     fn config(global: &str, repo: &str) -> Config {
         Config {
             global_path: PathBuf::from("/nonexistent/global.toml"),

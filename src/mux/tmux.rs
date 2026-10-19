@@ -1,36 +1,25 @@
-//! tmux backend. Works anywhere tmux 3.0+ runs, but can only tell whether an agent is running.
-
 use super::{Direction, Mux};
-use crate::context::Ctx;
+use crate::crew::context::Ctx;
+use crate::crew::panes;
+use crate::util::ui;
 use crate::util::{has, run_all, run_ok, run_out, shell_join};
-use crate::{lifecycle, ui};
 use anyhow::{bail, Result};
 use std::path::Path;
 
 pub struct Tmux;
-
-/// The tmux session name for a repo, e.g. crew-my-app.
 fn session(ctx: &Ctx) -> String {
     format!("crew-{}", ctx.slug)
 }
-
-/// A target that matches the session name exactly.
 fn exact(ctx: &Ctx) -> String {
     format!("={}", session(ctx))
 }
-
-/// tmux's major version number.
 pub fn major_version() -> Option<u32> {
     let out = run_out("tmux", &["-V"])?;
     out.chars().skip_while(|c| !c.is_ascii_digit()).take_while(char::is_ascii_digit).collect::<String>().parse().ok()
 }
-
-/// The -e arguments that tell a pane which crew and role it belongs to.
 fn env_args(ctx: &Ctx, role: &str) -> Vec<String> {
     vec!["-e".into(), format!("CREW_DIR={}", ctx.crew.display()), "-e".into(), format!("CREW_ROLE={role}")]
 }
-
-/// The pane saved for a role.
 fn role_pane(ctx: &Ctx, role: &str) -> Option<String> {
     ctx.state.get(&format!("pane:{role}"))
 }
@@ -182,7 +171,7 @@ impl Mux for Tmux {
 
     fn finish_layout(&self, ctx: &Ctx) {
         // First pane on the left, the rest stacked on the right.
-        if let Some(pane) = lifecycle::any_live_pane(ctx) {
+        if let Some(pane) = panes::any_live(ctx) {
             run_ok("tmux", &["set-option", "-w", "-t", &pane, "main-pane-width", "50%"]);
             run_ok("tmux", &["select-layout", "-t", &pane, "main-vertical"]);
         }

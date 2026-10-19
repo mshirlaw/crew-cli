@@ -33,25 +33,22 @@ mkdir -p "$HOME" "$WORK/bin" "$WORK/log" "$TMUX_TMPDIR"
 
 # ------------------------------------------------------------ helpers
 
-# Removes the temporary folder and any tmux server the tests started.
 cleanup() { tmux kill-server >/dev/null 2>&1; rm -rf "$WORK" "$TMUX_TMPDIR"; }
 trap cleanup EXIT
 
 
-# Runs the crew binary under test.
 crew() { "$CREW_BIN" "$@"; }
 
-# The same command as text, for checks that run inside sh -c.
+# For checks that run inside sh -c.
 CREW_RUN="'$CREW_BIN'"
 
-# Records a passing or failing check.
 check() {
   local name="$1" output; shift
   if output="$("$@" 2>&1)"; then PASSED=$((PASSED + 1)); echo "ok      $name"
   else FAILED=$((FAILED + 1)); echo "FAILED  $name"; report_failure "$name" "$output"; fi
 }
 
-# Shows a failed check's output, and on GitHub Actions also as an annotation on the run.
+# On GitHub Actions, also an annotation on the run, which is readable without downloading logs.
 report_failure() {
   local name="$1" output="$2"
   [ -n "$output" ] && printf '%s\n' "$output" | head -20 | sed 's/^/        | /'
@@ -61,32 +58,27 @@ report_failure() {
   fi
 }
 
-# Succeeds if a command's output contains some text.
 output_has() { local text="$1"; shift; "$@" 2>&1 | grep -qF -- "$text"; }
 
-# Succeeds if a command's output matches an extended regular expression.
 output_matches() { local pattern="$1"; shift; "$@" 2>&1 | grep -qE -- "$pattern"; }
 
-# Succeeds if a file contains some text.
 file_has() { grep -qF -- "$2" "$1" 2>/dev/null; }
 
-# Retries a check for up to 5 seconds, for things that happen in the background.
 eventually() { local i; for i in $(seq 1 50); do "$@" >/dev/null 2>&1 && return 0; sleep 0.1; done; return 1; }
 
-# Creates an empty git repo with one commit and prints its path.
 new_repo() {
   local dir="$WORK/repos/$1"
   mkdir -p "$dir" && git -C "$dir" init -q -b main && git -C "$dir" commit -q --allow-empty -m init
   printf '%s' "$dir"
 }
 
-# Inserts a top-level setting into a repo's config, right after base_branch.
+# Top-level TOML settings must come before the first [section], so insert after base_branch.
 set_repo_setting() {
   local file="$1/.crew/config.toml"
   awk -v line="$2" '{ print } /^base_branch =/ { print line }' "$file" > "$file.tmp" && mv "$file.tmp" "$file"
 }
 
-# Writes a stand-in agent that logs its arguments and every line typed into it.
+# A stand-in agent: logs its arguments and every line typed into it.
 make_stub_agent() {
   cat > "$WORK/bin/$1" <<EOF
 #!/bin/bash
@@ -96,7 +88,6 @@ EOF
   chmod +x "$WORK/bin/$1"
 }
 
-# Writes a fake herdr that records each command and answers like the real one.
 make_fake_herdr() {
   cat > "$WORK/bin/herdr" <<EOF
 #!/bin/bash
@@ -115,7 +106,7 @@ EOF
   chmod +x "$WORK/bin/herdr"
 }
 
-# Writes a global config that points every agent at its stand-in by full path.
+# Full paths, so a real agent on the PATH is never started by the tests.
 write_test_global_config() {
   mkdir -p "$HOME/.config/crew"
   cat > "$HOME/.config/crew/config.toml" <<EOF
@@ -134,10 +125,8 @@ command = "$WORK/bin/gemini --include-directories {crew} -i"
 EOF
 }
 
-# Prints the tmux pane id saved for a role.
 saved_pane() { awk -v k="pane:$2" '$1 == k { print $2 }' "$1/.crew/state/session"; }
 
-# Succeeds if tmux 3.0 or newer is installed.
 have_tmux3() { command -v tmux >/dev/null 2>&1 && [ "$(tmux -V | sed 's/[^0-9]*\([0-9]*\).*/\1/')" -ge 3 ]; }
 
 for a in claude codex gemini; do make_stub_agent "$a"; done

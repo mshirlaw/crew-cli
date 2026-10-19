@@ -1,14 +1,10 @@
-//! Text crew writes: role instructions, the protocol and starter config files.
-
 use crate::util::{crew_home, tilde};
 
-/// The sample global config, which is also what "crew config init" writes.
-pub const GLOBAL_CONFIG: &str = include_str!("../config.example.toml");
+// The sample config doubles as the template `crew config init` writes.
+pub const GLOBAL_CONFIG: &str = include_str!("../../config.example.toml");
 
-/// The rules every agent follows, appended to PROTOCOL.md.
 pub const PROTOCOL_RULES: &str = include_str!("templates/protocol-rules.md");
 
-/// Returns the starting instructions for a role: your saved version first, then a built-in one.
 pub fn role_template(role: &str) -> String {
     let saved = crew_home().join("roles").join(format!("{role}.md"));
     if let Ok(text) = std::fs::read_to_string(saved) {
@@ -26,7 +22,6 @@ pub fn role_template(role: &str) -> String {
     }
 }
 
-/// Returns the top of a new repo config.
 pub fn repo_config_header(base_branch: &str) -> String {
     format!(
         "# crew settings for this repo. Anything here overrides {}.\n\
@@ -39,7 +34,6 @@ pub fn repo_config_header(base_branch: &str) -> String {
     )
 }
 
-/// Returns roles for a new repo: lead, builder and reviewer, using the given agents.
 pub fn default_roles(lead: &str, builder: &str, reviewer: &str) -> String {
     format!(
         "\n[roles.lead]\nagent = \"{lead}\"\nworktree = false\n\
