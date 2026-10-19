@@ -40,7 +40,7 @@ pub fn cmd_add(ctx: &mut Ctx, role: &str, agent: Option<&str>, worktree: bool, l
     if ctx.role_exists(role) {
         bail!("role '{role}' already exists");
     }
-    let agent = agent.map(String::from).unwrap_or_else(|| util_first_installed(&["claude", "codex", "gemini"]));
+    let agent = agent.map_or_else(|| util_first_installed(&["claude", "codex", "gemini"]), String::from);
     ctx.config.set_role(role, Some(&agent), Some(worktree))?;
     ctx.reload()?;
     write_new_role_file(ctx, role, like)?;

@@ -5,6 +5,7 @@ use crate::config::util_first_installed;
 use crate::context::Ctx;
 use crate::{tasks, templates, ui, util};
 use anyhow::{bail, Result};
+use std::fmt::Write;
 use std::path::Path;
 
 /// crew setup: creates .crew/ if it doesn't exist, then lists the roles.
@@ -46,8 +47,7 @@ fn write_repo_config(ctx: &Ctx) -> Result<()> {
     let root = ctx.root.display().to_string();
     let base = util::run_out("git", &["-C", &root, "symbolic-ref", "--short", "HEAD"])
         .or_else(|| util::run_out("git", &["-C", &root, "rev-parse", "--short", "HEAD"]))
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "main".to_string());
+        .map_or_else(|| "main".to_string(), |s| s.trim().to_string());
     let roles = if ctx.config.global_has_roles() {
         format!("\n{}", ctx.config.global_roles_text())
     } else {
@@ -120,11 +120,12 @@ pub fn write_protocol(ctx: &Ctx) -> Result<()> {
         } else {
             format!("{base} (main checkout)")
         };
-        text.push_str(&format!(
-            "| {role} | {} | {branch} | {} |\n",
+        let _ = writeln!(
+            text,
+            "| {role} | {} | {branch} | {} |",
             ctx.config.role_agent(&role),
             ctx.role_dir(&role).display()
-        ));
+        );
     }
     text.push_str(templates::PROTOCOL_RULES);
     std::fs::write(ctx.file("PROTOCOL.md"), text)?;
@@ -138,8 +139,7 @@ pub fn migrate_old_roster(crew: &Path) -> Result<()> {
     if !old.is_file() || new.exists() {
         return Ok(());
     }
-    let base =
-        std::fs::read_to_string(crew.join("base")).map(|s| s.trim().to_string()).unwrap_or_else(|_| "main".into());
+    let base = std::fs::read_to_string(crew.join("base")).map_or_else(|_| "main".into(), |s| s.trim().to_string());
     let mut text = templates::repo_config_header(&base);
     for line in std::fs::read_to_string(&old)?.lines() {
         let fields: Vec<&str> = line.split_whitespace().collect();
@@ -147,7 +147,7 @@ pub fn migrate_old_roster(crew: &Path) -> Result<()> {
             continue;
         }
         let worktree = fields.get(2) != Some(&"no");
-        text.push_str(&format!("\n[roles.{}]\nagent = \"{}\"\nworktree = {worktree}\n", fields[0], fields[1]));
+        let _ = write!(text, "\n[roles.{}]\nagent = \"{}\"\nworktree = {worktree}\n", fields[0], fields[1]);
     }
     std::fs::write(&new, text)?;
     std::fs::rename(&old, crew.join("crew.conf.old"))?;

@@ -31,6 +31,7 @@ In a repo where crew runs, everything lives in `.crew/`: `config.toml`, `roles/*
 ## Rules for changing crew
 
 - **Small single-purpose functions, each with a one-line plain-English `///` comment.** Command functions (`cmd_*`) should read as a list of steps.
+- **clippy runs with the `pedantic` group on** (set in `Cargo.toml`), and CI treats every warning as an error. Fix the code rather than adding `allow`s; if an `allow` is truly needed, put it on the smallest item with a comment saying why.
 - **Before committing:** `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `test/run.sh`, `shellcheck install.sh test/run.sh`. CI runs all of them.
 - **Add tests for behaviour changes:** unit tests for pure logic, a `check` line in `test/run.sh` for anything visible from the command line.
 - **Few dependencies, no runtime requirements** beyond git and herdr or tmux.

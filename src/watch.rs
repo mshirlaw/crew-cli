@@ -1,5 +1,5 @@
 //! The stall watcher. An agent is stalled when it owes work (an open task or an unanswered message)
-//! and its screen hasn't changed for stall_timeout seconds. The lead is told once per stall;
+//! and its screen hasn't changed for `stall_timeout` seconds. The lead is told once per stall;
 //! if the lead itself is stalled, the human is told instead.
 
 use crate::context::Ctx;
@@ -148,7 +148,7 @@ pub fn stop_watcher(ctx: &Ctx) {
     let _ = std::fs::remove_file(pid_file(ctx));
 }
 
-/// crew watch [--once]: checks for stalled agents every watch_interval seconds until the crew stops.
+/// crew watch [--once]: checks for stalled agents every `watch_interval` seconds until the crew stops.
 pub fn cmd_watch(ctx: &Ctx, once: bool) -> Result<()> {
     ctx.require_crew()?;
     if once {

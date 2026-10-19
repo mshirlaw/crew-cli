@@ -1,5 +1,5 @@
 //! Settings from ~/.config/crew/config.toml (global) and .crew/config.toml (repo; wins over global).
-//! Files are edited with toml_edit so comments and ordering survive.
+//! Files are edited with `toml_edit` so comments and ordering survive.
 
 use crate::{templates, ui, util};
 use anyhow::{anyhow, bail, Context, Result};
@@ -97,7 +97,7 @@ impl Config {
     /// Reads a number setting, whole or decimal.
     fn number(&self, path: &[&str]) -> Option<f64> {
         let item = self.item(path)?;
-        item.as_float().or_else(|| item.as_integer().map(|n| n as f64))
+        item.as_float().or_else(|| item.as_integer().and_then(|n| i32::try_from(n).ok()).map(f64::from))
     }
 
     /// The configured multiplexer (default herdr).
@@ -139,22 +139,22 @@ impl Config {
 
     /// Seconds of no screen change before an agent that owes work counts as stalled (default 600; 0 is off).
     pub fn stall_timeout(&self) -> u64 {
-        match self.item(&["stall_timeout"]).map(|i| i.as_integer()) {
+        match self.item(&["stall_timeout"]).map(Item::as_integer) {
             None => 600,
-            Some(Some(n)) if n >= 0 => n as u64,
-            _ => {
+            Some(n) => n.and_then(|n| u64::try_from(n).ok()).unwrap_or_else(|| {
                 ui::warn("stall_timeout must be whole seconds. Using 600");
                 600
-            }
+            }),
         }
     }
 
     /// Seconds between stall checks (default 30).
     pub fn watch_interval(&self) -> u64 {
-        match self.item(&["watch_interval"]).and_then(Item::as_integer) {
-            Some(n) if n > 0 => n as u64,
-            _ => 30,
-        }
+        self.item(&["watch_interval"])
+            .and_then(Item::as_integer)
+            .and_then(|n| u64::try_from(n).ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(30)
     }
 
     /// The branch the crew merges into, if set.
@@ -342,7 +342,7 @@ mod tests {
     fn repo_settings_win() {
         let c = config("multiplexer = \"tmux\"\npaste_delay = 1", "multiplexer = \"herdr\"");
         assert_eq!(c.multiplexer().unwrap(), MuxKind::Herdr);
-        assert_eq!(c.paste_delay(), 1.0);
+        assert!((c.paste_delay() - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]

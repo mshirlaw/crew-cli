@@ -198,13 +198,13 @@ fn run(cli: Cli) -> Result<bool> {
             return Ok(true);
         }
         Command::Doctor => return commands::cmd_doctor(),
-        Command::Config { command: Some(ConfigCommand::Init) } => return commands::cmd_config_init().map(|_| true),
+        Command::Config { command: Some(ConfigCommand::Init) } => return commands::cmd_config_init().map(|()| true),
         Command::Config { command: Some(ConfigCommand::Example) } => {
             commands::cmd_config_example();
             return Ok(true);
         }
         Command::Config { command: Some(ConfigCommand::Edit { global: true }) } => {
-            return commands::cmd_config_edit_global().map(|_| true)
+            return commands::cmd_config_edit_global().map(|()| true)
         }
         _ => {}
     }
@@ -216,7 +216,7 @@ fn run(cli: Cli) -> Result<bool> {
         Command::Board { lines } => board::cmd_board(&ctx, lines)?,
         Command::Tasks | Command::Task { command: None | Some(TaskCommand::List) } => tasks::cmd_list(&ctx)?,
         Command::Task { command: Some(TaskCommand::Add { title, owner, notes }) } => {
-            tasks::cmd_add(&ctx, &title, owner.as_deref(), notes.as_deref())?
+            tasks::cmd_add(&ctx, &title, owner.as_deref(), notes.as_deref())?;
         }
         Command::Task { command: Some(TaskCommand::Set { id, changes }) } => tasks::cmd_set(&ctx, id, &changes)?,
         Command::Task { command: Some(TaskCommand::Done { id, notes }) } => tasks::cmd_done(&ctx, id, &notes)?,
@@ -228,7 +228,7 @@ fn run(cli: Cli) -> Result<bool> {
             RoleCommand::List => roles::cmd_list(&ctx)?,
             RoleCommand::Show { role } => roles::cmd_show(&ctx, &role)?,
             RoleCommand::Add { role, agent, no_worktree, like } => {
-                roles::cmd_add(&mut ctx, &role, agent.as_deref(), !no_worktree, like.as_deref())?
+                roles::cmd_add(&mut ctx, &role, agent.as_deref(), !no_worktree, like.as_deref())?;
             }
             RoleCommand::Edit { role } => roles::cmd_edit(&ctx, &role)?,
             RoleCommand::Set { role, changes } => roles::cmd_set(&mut ctx, &role, &changes)?,

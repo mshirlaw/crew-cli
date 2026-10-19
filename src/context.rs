@@ -19,13 +19,12 @@ pub struct Ctx {
 impl Ctx {
     /// Finds the repo and its .crew folder, upgrades files from older versions, and loads the config.
     pub fn load() -> Result<Ctx> {
-        let (root, crew) = match std::env::var_os("CREW_DIR").map(PathBuf::from).filter(|d| d.is_dir()) {
-            Some(crew) => (crew.parent().map(Path::to_path_buf).unwrap_or_default(), crew),
-            None => {
-                let root = repo_root().ok_or_else(|| anyhow!("not inside a git repository"))?;
-                let crew = root.join(".crew");
-                (root, crew)
-            }
+        let (root, crew) = if let Some(crew) = std::env::var_os("CREW_DIR").map(PathBuf::from).filter(|d| d.is_dir()) {
+            (crew.parent().map(Path::to_path_buf).unwrap_or_default(), crew)
+        } else {
+            let root = repo_root().ok_or_else(|| anyhow!("not inside a git repository"))?;
+            let crew = root.join(".crew");
+            (root, crew)
         };
         setup::migrate_old_roster(&crew)?;
         let config = Config::load(Some(crew.join("config.toml")))?;

@@ -2,6 +2,7 @@
 
 use crate::context::Ctx;
 use crate::{ui, util};
+use std::fmt::Write;
 
 /// The first message an agent receives, telling it where its instructions are.
 pub fn kickoff_prompt(ctx: &Ctx, role: &str, revive: bool) -> String {
@@ -11,9 +12,10 @@ pub fn kickoff_prompt(ctx: &Ctx, role: &str, revive: bool) -> String {
          now and follow them, then read {crew}/board.md and {crew}/tasks.md."
     );
     if revive {
-        msg.push_str(&format!(
+        let _ = write!(
+            msg,
             " You were restarted: also read {crew}/notes/{role}.md for your own handoff and continue from there."
-        ));
+        );
     } else if role == "lead" {
         msg.push_str(" Then briefly greet the human and ask what the crew should work on.");
     }

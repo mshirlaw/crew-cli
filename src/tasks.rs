@@ -4,6 +4,7 @@
 use crate::context::Ctx;
 use crate::{ui, util};
 use anyhow::{bail, Context, Result};
+use std::fmt::Write;
 use std::fs::OpenOptions;
 
 /// The statuses a task can have.
@@ -37,7 +38,10 @@ pub fn parse(text: &str) -> Vec<Task> {
 
 /// Writes tasks as tasks.tsv text.
 pub fn to_tsv(tasks: &[Task]) -> String {
-    tasks.iter().map(|t| format!("{}\t{}\t{}\t{}\t{}\n", t.id, t.status, t.owner, t.title, t.notes)).collect()
+    tasks.iter().fold(String::new(), |mut out, t| {
+        let _ = writeln!(out, "{}\t{}\t{}\t{}\t{}", t.id, t.status, t.owner, t.title, t.notes);
+        out
+    })
 }
 
 /// Writes tasks as the tasks.md table agents read.
@@ -48,14 +52,15 @@ pub fn render(tasks: &[Task]) -> String {
     );
     for t in tasks {
         let cell = |s: &str| s.replace('|', "/");
-        out.push_str(&format!(
-            "| {} | {} | {} | {} | {} |\n",
+        let _ = writeln!(
+            out,
+            "| {} | {} | {} | {} | {} |",
             t.id,
             cell(&t.status),
             cell(&t.owner),
             cell(&t.title),
             cell(&t.notes)
-        ));
+        );
     }
     out
 }

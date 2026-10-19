@@ -13,13 +13,12 @@ pub fn has(program: &str) -> bool {
         return is_executable(Path::new(program));
     }
     std::env::var_os("PATH")
-        .map(|paths| std::env::split_paths(&paths).any(|dir| is_executable(&dir.join(program))))
-        .unwrap_or(false)
+        .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| is_executable(&dir.join(program))))
 }
 
 /// Succeeds if a path is an executable file.
 fn is_executable(path: &Path) -> bool {
-    path.metadata().map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).unwrap_or(false)
+    path.metadata().is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
 /// Runs a command quietly and reports whether it succeeded.
@@ -30,8 +29,7 @@ pub fn run_ok<S: AsRef<OsStr>>(program: &str, args: &[S]) -> bool {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .is_ok_and(|s| s.success())
 }
 
 /// Runs a command and returns its output if it succeeded.
@@ -106,7 +104,7 @@ pub fn shell_join(words: &[String]) -> String {
 
 /// Seconds since the Unix epoch.
 pub fn now_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
 /// Formats a number of seconds as "45s" or "12 min".
@@ -150,7 +148,7 @@ pub fn edit_file(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Returns crew's personal settings folder: $CREW_HOME, else $XDG_CONFIG_HOME/crew, else ~/.config/crew.
+/// Returns crew's personal settings folder: $`CREW_HOME`, else $`XDG_CONFIG_HOME/crew`, else ~/.config/crew.
 pub fn crew_home() -> PathBuf {
     if let Some(dir) = std::env::var_os("CREW_HOME").filter(|v| !v.is_empty()) {
         return PathBuf::from(dir);

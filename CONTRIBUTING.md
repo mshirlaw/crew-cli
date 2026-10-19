@@ -15,7 +15,7 @@ Thanks for helping. crew is a small Rust program; please keep it small and reada
 ```
 cargo build --release
 cargo fmt                                  # format
-cargo clippy --all-targets -- -D warnings  # lint; CI fails on any warning
+cargo clippy --all-targets -- -D warnings  # lint (pedantic is on, see Cargo.toml); CI fails on any warning
 cargo test                                 # unit tests
 test/run.sh                                # end-to-end tests against target/release/crew
 shellcheck install.sh test/run.sh

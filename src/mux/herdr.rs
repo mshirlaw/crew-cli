@@ -10,7 +10,7 @@ use std::path::Path;
 
 pub struct Herdr;
 
-/// Reads the string at a JSON pointer like /result/pane/pane_id from herdr's output.
+/// Reads the string at a JSON pointer like /`result/pane/pane_id` from herdr's output.
 fn json_field(output: &str, pointer: &str) -> Option<String> {
     let value: serde_json::Value = serde_json::from_str(output.trim()).ok()?;
     value.pointer(pointer)?.as_str().map(String::from)
