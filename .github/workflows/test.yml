@@ -1,0 +1,37 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            os: ubuntu-latest
+            bash: bash
+          - name: macOS (bash 3.2)
+            os: macos-latest
+            bash: /bin/bash
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tmux and shellcheck (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y tmux shellcheck
+
+      - name: Install tmux and shellcheck (macOS)
+        if: runner.os == 'macOS'
+        run: brew install tmux shellcheck
+
+      - name: Shellcheck
+        run: shellcheck crew install.sh test/run.sh
+
+      - name: Tests
+        run: CREW_BASH=${{ matrix.bash }} test/run.sh

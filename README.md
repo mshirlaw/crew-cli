@@ -1,5 +1,7 @@
 # crew-cli
 
+[![test](https://github.com/mshirlaw/crew-cli/actions/workflows/test.yml/badge.svg)](https://github.com/mshirlaw/crew-cli/actions/workflows/test.yml)
+
 One command to start a team of AI coding agents in any repo. Each agent gets a role, its own git worktree, and a shared message board, all running in [herdr](https://herdr.dev) or tmux.
 
 ```
@@ -27,12 +29,15 @@ Tell the lead what you want. It writes tasks, hands them out, and the agents mes
 You need git and one multiplexer: [herdr](https://herdr.dev) (plus `jq`), or tmux 3.0 or newer.
 
 ```
-git clone https://github.com/mshirlaw/crew-cli
-cd crew-cli && ./install.sh
+curl -fsSL https://raw.githubusercontent.com/mshirlaw/crew-cli/main/install.sh | bash
 crew doctor
 ```
 
-`install.sh` copies `crew` to `~/.local/bin` and creates `~/.config/crew/config.toml`. It picks herdr if it's installed, otherwise tmux. To update later, run `git pull && ./install.sh`; your config is left alone.
+Or clone the repo and run `./install.sh`. To install a specific release, add `CREW_REF=v0.4.0` before `bash`.
+
+The installer copies `crew` to `~/.local/bin` and creates `~/.config/crew/config.toml`, picking herdr if it's installed, otherwise tmux. Run it again to update; your config is left alone.
+
+To uninstall: `curl -fsSL https://raw.githubusercontent.com/mshirlaw/crew-cli/main/install.sh | bash -s -- --uninstall` (or `./install.sh --uninstall`). This removes the command and tells you which config and worktree folders were left in place.
 
 You also need at least one of `claude`, `codex` or `gemini` installed and logged in, or any other agent CLI you configure.
 
@@ -84,6 +89,24 @@ kind = ""        # herdr only: type this command instead of using herdr's agent 
 
 With either one, every message is also written to the board.
 
+## What crew does and doesn't do
+
+Before you start a crew, know what it costs and what it can touch.
+
+- **Cost.** Every role is a full agent session. Three roles use roughly three times the tokens, or three times your subscription's quota, of working with one agent. Start with two or three roles and add more only when they earn it.
+- **Permissions are the agents' own.** crew launches each agent with its normal permission settings and never adds auto-approve flags. Each agent asks you before running commands, exactly as it would on its own. If you've set an agent to skip approvals, that applies here too, times every role.
+- **crew never pushes, merges or deletes your work.** It creates `crew/<role>` branches and worktrees, and `crew teardown` removes only worktrees with no uncommitted changes. The lead *agent* is told to merge approved branches into your base branch locally. Review that before you push.
+- **Agents talk only through `crew say`.** Every message is written to `.crew/board.md`, so you can always see what was said.
+- **Everything stays on your machine.** crew sends nothing anywhere. The agents talk to their own providers as usual.
+
+## Known limitations
+
+- Roles are only as good as their instructions. Expect to tune `.crew/roles/*.md` for your project.
+- On tmux, crew can only tell whether an agent is running, not whether it's busy or waiting for approval. Messages to a busy agent are typed in anyway.
+- crew doesn't yet notice when an agent runs out of tokens or hits a usage limit. That agent just stops responding.
+- The config reads a subset of TOML: sections, strings, numbers and true/false, no arrays.
+- Two crews can't share one repo checkout at the same time.
+
 ## How it works
 
 | Piece | Where it lives | Why |
@@ -92,7 +115,7 @@ With either one, every message is also written to the board.
 | Roles | `.crew/roles/<role>.md` | each agent's instructions. Edit freely |
 | Protocol | `.crew/PROTOCOL.md` | shared rules + team table (regenerated on every start) |
 | Board | `.crew/board.md` | the conversation. Every message is appended here |
-| Tasks | `.crew/tasks.md` | who's doing what |
+| Tasks | `.crew/tasks.md` | who's doing what. Generated from `tasks.tsv`; change it with `crew task` |
 | Notes | `.crew/notes/<role>.md` | each agent's handoff, so a restarted agent picks up where it left off |
 | Worktrees | `<worktree_dir>/<repo>/<role>` on branch `crew/<role>` | agents never step on each other's files |
 
@@ -110,7 +133,10 @@ crew setup                 just create .crew/ (to customise roles before startin
 crew status                each agent and its state
 crew say <role|all> "msg"  message an agent from your own terminal
 crew board [n]             last n lines of the conversation
-crew tasks                 show tasks.md
+crew tasks                 show the task list
+crew task add "title" --owner builder --notes "acceptance criteria"
+crew task set 3 status=review owner=reviewer
+crew task done 3 "merged"
 crew restart <role|all>    restart agents
 crew stop                  close the session (everything else kept)
 crew teardown              stop + remove clean worktrees (branches kept)
@@ -140,5 +166,15 @@ Changes to a role's agent or worktree apply after `crew restart <role>`. Saved r
 - **Messages not sending on tmux?** crew pastes the message, waits `paste_delay` seconds (default 0.3), then presses Enter. If messages sit in an agent's input box unsent, raise it, e.g. `paste_delay = 1` near the top of your config, above any `[section]`.
 - **Avoiding loops.** The protocol forbids "ok / thanks" messages. If two agents still ping-pong, tighten their role files.
 - **Merging.** Only the lead merges `crew/*` branches into your base branch. Review the result like any other change before pushing.
+- **Shared tasks are safe.** `crew task` takes a lock before every change, so several agents can update tasks at once without losing an edit.
+- **Upgrading from 0.2 or 0.3.** An old hand-written `tasks.md` is moved to `tasks-old.md` the first time you run a task command.
 - **Upgrading from 0.2.** An old `.crew/crew.conf` is converted to `.crew/config.toml` automatically the first time you run crew.
 - The tmux session is called `crew-<repo>`. In herdr, agents are named `<repo>-<role>`, so `herdr agent prompt my-app-builder "..."` also works.
+
+## Contributing
+
+Bug reports and pull requests are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). Run `test/run.sh` before sending a change.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
