@@ -137,6 +137,7 @@ Changes to a role's agent or worktree apply after `crew restart <role>`. Saved r
 
 - **First launch asks questions.** Claude, Codex and Gemini each ask you to trust a new folder. Approve it in each pane once; the kickoff prompt runs straight after.
 - **Codex sandbox.** Codex may ask permission before running `crew say`, because it talks to herdr or tmux. Approve it (or allow it permanently) so Codex can message the team.
+- **Messages not sending on tmux?** crew pastes the message, waits `paste_delay` seconds (default 0.3), then presses Enter. If messages sit in an agent's input box unsent, raise it, e.g. `paste_delay = 1` near the top of your config, above any `[section]`.
 - **Avoiding loops.** The protocol forbids "ok / thanks" messages. If two agents still ping-pong, tighten their role files.
 - **Merging.** Only the lead merges `crew/*` branches into your base branch. Review the result like any other change before pushing.
 - **Upgrading from 0.2.** An old `.crew/crew.conf` is converted to `.crew/config.toml` automatically the first time you run crew.

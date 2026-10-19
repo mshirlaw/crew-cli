@@ -8,6 +8,10 @@ multiplexer = "herdr"
 # Where agent worktrees are created. Each repo gets its own folder inside.
 worktree_dir = "~/.crew/worktrees"
 
+# tmux only: seconds to wait between pasting a message into an agent and pressing Enter.
+# Raise it (e.g. 1) if messages arrive in an agent's input box but aren't sent.
+paste_delay = 0.3
+
 # How each agent is launched. Placeholders:
 #   {crew}   the shared .crew folder (agents need access to it)
 #   {repo}   the repo's main folder

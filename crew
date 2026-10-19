@@ -545,8 +545,14 @@ tmux_deliver() {
   pane="$(state_get "pane:$role")"
   tmux set-buffer -b "$buffer" -- "$text" &&
     tmux paste-buffer -p -d -b "$buffer" -t "$pane" &&
-    sleep 0.3 &&
+    sleep "$(paste_delay)" &&
     tmux send-keys -t "$pane" Enter
+}
+
+# Prints how many seconds to wait between pasting a message and pressing Enter (paste_delay, default 0.3).
+paste_delay() {
+  local d; d="$(cfg paste_delay 0.3)"
+  case "$d" in ''|*[!0-9.]*) warn "paste_delay must be a number of seconds, not \"$d\". Using 0.3"; echo 0.3 ;; *) echo "$d" ;; esac
 }
 
 # Closes a pane.
@@ -752,6 +758,10 @@ multiplexer = "herdr"
 
 # Where agent worktrees are created. Each repo gets its own folder inside.
 worktree_dir = "~/.crew/worktrees"
+
+# tmux only: seconds to wait between pasting a message into an agent and pressing Enter.
+# Raise it (e.g. 1) if messages arrive in an agent's input box but aren't sent.
+paste_delay = 0.3
 
 # How each agent is launched. Placeholders:
 #   {crew}   the shared .crew folder (agents need access to it)
@@ -1132,7 +1142,9 @@ config_show() {
   printf '  global  %s%s\n' "$(tilde "$GLOBAL_CONFIG")" "$([ -f "$GLOBAL_CONFIG" ] || echo '  (not created; crew config edit --global)')"
   printf '  repo    .crew/config.toml\n\n'
   printf '%sSettings%s\n' "$BOLD" "$RESET"
-  printf '  multiplexer   %s\n  worktree_dir  %s\n  base_branch   %s\n\n' "$MUX" "$(cfg worktree_dir "~/.crew/worktrees")" "$(base_branch)"
+  printf '  multiplexer   %s\n  worktree_dir  %s\n  base_branch   %s\n' "$MUX" "$(cfg worktree_dir "~/.crew/worktrees")" "$(base_branch)"
+  [ "$MUX" = tmux ] && printf '  paste_delay   %ss\n' "$(paste_delay)"
+  printf '\n'
   printf '%sAgents in use%s\n' "$BOLD" "$RESET"
   for a in $(for r in $(list_roles); do role_agent "$r"; echo; done | sort -u); do
     printf '  %-8s %s' "$a" "$(agent_command "$a")"
