@@ -14,7 +14,9 @@ WORK="$(cd "$(mktemp -d)" && pwd -P)"   # physical path, so it matches what crew
 PASSED=0
 FAILED=0
 
-export HOME="$WORK/home" PATH="$WORK/bin:$PATH" TMUX_TMPDIR="$WORK/tmux" GIT_CONFIG_NOSYSTEM=1
+# tmux's socket goes in a short path: macOS limits socket paths to about 104 characters.
+TMUX_TMPDIR="/tmp/crew-test-$$"
+export HOME="$WORK/home" PATH="$WORK/bin:$PATH" TMUX_TMPDIR GIT_CONFIG_NOSYSTEM=1
 export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com
 unset TMUX CREW_DIR CREW_ROLE CREW_HOME XDG_CONFIG_HOME HERDR_ENV
 mkdir -p "$HOME" "$WORK/bin" "$WORK/log" "$TMUX_TMPDIR"
@@ -22,7 +24,7 @@ mkdir -p "$HOME" "$WORK/bin" "$WORK/log" "$TMUX_TMPDIR"
 # ------------------------------------------------------------ helpers
 
 # Removes the temporary folder and any tmux server the tests started.
-cleanup() { tmux kill-server >/dev/null 2>&1; rm -rf "$WORK"; }
+cleanup() { tmux kill-server >/dev/null 2>&1; rm -rf "$WORK" "$TMUX_TMPDIR"; }
 trap cleanup EXIT
 
 CREW_BIN="${CREW_BIN:-$SOURCE_DIR/target/release/crew}"
@@ -38,9 +40,19 @@ CREW_RUN="'$CREW_BIN'"
 
 # Records a passing or failing check.
 check() {
-  local name="$1"; shift
-  if "$@" >/dev/null 2>&1; then PASSED=$((PASSED + 1)); echo "ok      $name"
-  else FAILED=$((FAILED + 1)); echo "FAILED  $name"; fi
+  local name="$1" output; shift
+  if output="$("$@" 2>&1)"; then PASSED=$((PASSED + 1)); echo "ok      $name"
+  else FAILED=$((FAILED + 1)); echo "FAILED  $name"; report_failure "$name" "$output"; fi
+}
+
+# Shows a failed check's output, and on GitHub Actions also as an annotation on the run.
+report_failure() {
+  local name="$1" output="$2"
+  [ -n "$output" ] && printf '%s\n' "$output" | head -20 | sed 's/^/        | /'
+  if [ "${GITHUB_ACTIONS:-}" = true ]; then
+    output="$(printf '%s' "$output" | head -c 800 | sed -e 's/%/%25/g' | awk 'BEGIN { ORS = "%0A" } { print }')"
+    echo "::error title=crew test failed::$name: ${output:-no output}"
+  fi
 }
 
 # Succeeds if a command's output contains some text.
