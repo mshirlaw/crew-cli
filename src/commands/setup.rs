@@ -35,7 +35,7 @@ pub fn create(ctx: &mut Ctx) -> Result<()> {
     if !ctx.file("board.md").exists() {
         std::fs::write(ctx.file("board.md"), "# Crew board\n\n")?;
     }
-    tasks::migrate_old_tasks(ctx)?;
+    tasks::init(ctx)?;
     protocol::write(ctx)?;
     hide_from_git(ctx)
 }

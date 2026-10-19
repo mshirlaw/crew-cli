@@ -1,6 +1,5 @@
 use super::config::Config;
 use super::state::State;
-use super::upgrade;
 use crate::mux::{self, Mux};
 use crate::util;
 use anyhow::{anyhow, bail, Result};
@@ -25,7 +24,6 @@ impl Ctx {
             let crew = root.join(".crew");
             (root, crew)
         };
-        upgrade::migrate_old_roster(&crew)?;
         let config = Config::load(Some(crew.join("config.toml")))?;
         let mux = mux::make(config.multiplexer()?);
         let slug = slugify(&root.file_name().unwrap_or_default().to_string_lossy());
@@ -72,11 +70,7 @@ impl Ctx {
     }
 
     pub fn base_branch(&self) -> String {
-        self.config
-            .base_branch()
-            .or_else(|| std::fs::read_to_string(self.crew.join("base")).ok().map(|s| s.trim().to_string()))
-            .filter(|b| !b.is_empty())
-            .unwrap_or_else(|| "main".to_string())
+        self.config.base_branch().filter(|b| !b.is_empty()).unwrap_or_else(|| "main".to_string())
     }
 
     pub fn file(&self, name: &str) -> PathBuf {

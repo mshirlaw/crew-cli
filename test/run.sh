@@ -173,18 +173,6 @@ R2="$(new_repo from-global)"
 check "new repos use saved roles"            sh -c "cd '$R2' && $CREW_RUN setup && grep -q 'roles.tester' .crew/config.toml"
 write_test_global_config
 
-# ------------------------------------------------------------ upgrades from 0.2
-
-echo "# upgrading"
-R="$(new_repo upgrade)"; cd "$R" || exit 1
-mkdir -p .crew/roles .crew/notes
-printf 'lead     claude no\nbuilder  codex yes\n' > .crew/crew.conf
-printf '# Tasks\n\n| task | owner | status | notes |\n|------|-------|--------|-------|\n| old work | builder | doing | |\n' > .crew/tasks.md
-check "old crew.conf is converted"           output_has "builder    codex    yes" crew role
-check "converted config has both roles"      file_has .crew/config.toml "[roles.lead]"
-check "old file is kept as a backup"         test -f .crew/crew.conf.old
-check "old task list is moved aside"         sh -c "$CREW_RUN tasks >/dev/null && test -f .crew/tasks-old.md"
-
 # ------------------------------------------------------------ tasks
 
 echo "# tasks"

@@ -7,6 +7,5 @@ pub mod protocol;
 pub mod state;
 pub mod tasks;
 pub mod templates;
-pub mod upgrade;
 pub mod watcher;
 pub mod worktree;

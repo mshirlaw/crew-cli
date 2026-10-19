@@ -2,7 +2,7 @@
 // Changes hold a file lock, so agents updating tasks at the same time can't lose each other's edits.
 
 use super::context::Ctx;
-use crate::util::{self, ui};
+use crate::util;
 use anyhow::{Context, Result};
 use std::fmt::Write;
 use std::fs::OpenOptions;
@@ -119,15 +119,9 @@ pub fn open_for(ctx: &Ctx, role: &str) -> Vec<u32> {
         .collect()
 }
 
-// crew 0.3 and earlier had a hand-written tasks.md; move it aside so the generated one can replace it.
-pub fn migrate_old_tasks(ctx: &Ctx) -> Result<()> {
+pub fn init(ctx: &Ctx) -> Result<()> {
     if ctx.file("tasks.tsv").exists() {
         return Ok(());
-    }
-    let old = std::fs::read_to_string(ctx.file("tasks.md")).unwrap_or_default();
-    if old.lines().filter(|l| l.starts_with('|')).count() > 2 {
-        std::fs::rename(ctx.file("tasks.md"), ctx.file("tasks-old.md"))?;
-        ui::info("moved your old task list to .crew/tasks-old.md; add tasks again with crew task add");
     }
     save(ctx, &[])
 }

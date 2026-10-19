@@ -23,7 +23,7 @@ src/
                    board     posting messages, unanswered-message detection
                    tasks     tasks.tsv store, lock, generated tasks.md
                    watcher   stall detection and the background watcher
-                   worktree, protocol, templates (+ templates/*.md), upgrade (older versions)
+                   worktree, protocol, templates (+ templates/*.md)
   mux/           the Mux trait, herdr.rs and tmux.rs
   util/          ui (output), process, files, text
 ```
@@ -95,12 +95,6 @@ These were settled while building crew. Don't reverse one without a good reason,
 ### Distribution
 - **GitHub releases are built by `release.yml`** on a `v*` tag that must match `Cargo.toml`. Each archive has a `.sha256` that `install.sh` checks.
 - **Homebrew comes later.** First a tap (a `Formula/crew.rb` in this repo is enough; users run `brew tap mshirlaw/crew https://github.com/mshirlaw/crew-cli`). Official homebrew-core needs 225+ stars (self-submitted) and a repo at least 30 days old.
-
-### Upgrades
-- 0.2's `.crew/crew.conf` is converted to `.crew/config.toml` automatically (the old file is kept as `crew.conf.old`). A hand-written `tasks.md` from 0.2 or 0.3 is moved to `tasks-old.md`.
-
-### Docs
-- **The README stays short:** what crew is, install, use, configure, how it works, and the few things worth knowing. No upgrade notes or edge cases for a tool nobody has used yet; detail lives in `crew help`, `config.example.toml` and this file.
 
 ## Not done yet
 

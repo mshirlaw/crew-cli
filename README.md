@@ -1,6 +1,6 @@
 # crew-cli
 
-[![test](https://github.com/mshirlaw/crew-cli/actions/workflows/test.yml/badge.svg)](https://github.com/mshirlaw/crew-cli/actions/workflows/test.yml)
+[![test](https://github.com/mshirlaw/crew-cli/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/mshirlaw/crew-cli/actions/workflows/test.yml)
 
 Start a team of AI coding agents in any repo with one command. Each agent gets a role, its own git worktree and a shared message board, running in [herdr](https://herdr.dev) or tmux.
 

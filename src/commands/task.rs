@@ -5,14 +5,12 @@ use anyhow::{bail, Result};
 
 pub fn list(ctx: &Ctx) -> Result<()> {
     ctx.require_crew()?;
-    tasks::migrate_old_tasks(ctx)?;
-    print!("{}", std::fs::read_to_string(ctx.file("tasks.md")).unwrap_or_default());
+    print!("{}", tasks::render(&tasks::load(ctx)));
     Ok(())
 }
 
 pub fn add(ctx: &Ctx, title: &[String], owner: Option<&str>, notes: Option<&str>) -> Result<()> {
     ctx.require_crew()?;
-    tasks::migrate_old_tasks(ctx)?;
     let title = one_line(&title.join(" "));
     if title.trim().is_empty() {
         bail!("usage: crew task add \"title\" [--owner role] [--notes \"...\"]");
@@ -27,7 +25,6 @@ pub fn add(ctx: &Ctx, title: &[String], owner: Option<&str>, notes: Option<&str>
 
 pub fn set(ctx: &Ctx, id: u32, changes: &[String]) -> Result<()> {
     ctx.require_crew()?;
-    tasks::migrate_old_tasks(ctx)?;
     if !tasks::exists(ctx, id) {
         bail!("no task {id}");
     }
@@ -49,7 +46,6 @@ pub fn set(ctx: &Ctx, id: u32, changes: &[String]) -> Result<()> {
 
 pub fn done(ctx: &Ctx, id: u32, notes: &[String]) -> Result<()> {
     ctx.require_crew()?;
-    tasks::migrate_old_tasks(ctx)?;
     if !tasks::exists(ctx, id) {
         bail!("no task {id}");
     }
