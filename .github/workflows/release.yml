@@ -39,7 +39,7 @@ jobs:
       - name: Check the tag matches Cargo.toml
         run: |
           version="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
-          [ "v$version" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME doesn't match Cargo.toml version $version"; exit 1; }
+          [ "v$version" = "$GITHUB_REF_NAME" ] || { echo "::error::tag $GITHUB_REF_NAME doesn't match Cargo.toml version $version"; exit 1; }
 
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
