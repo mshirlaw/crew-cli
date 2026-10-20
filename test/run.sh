@@ -98,6 +98,7 @@ case "\$1 \$2" in
   "workspace get")    test -f "$WORK/log/herdr-ws-\$3" ;;
   "workspace close")  rm -f "$WORK/log/herdr-ws-\$3" ;;
   "workspace create") touch "$WORK/log/herdr-ws-w1"; echo '{"result":{"workspace":{"workspace_id":"w1"},"tab":{"tab_id":"w1:t1"},"root_pane":{"pane_id":"w1:p1"}}}' ;;
+  "pane get")         ! grep -qx "\$3" "$WORK/log/herdr-gone" 2>/dev/null ;;
   "pane split")       echo "{\"result\":{\"pane\":{\"pane_id\":\"w1:p\$n\"}}}" ;;
   "tab create")       echo "{\"result\":{\"tab\":{\"tab_id\":\"w1:t\$n\"},\"root_pane\":{\"pane_id\":\"w1:b\$n\"}}}" ;;
   *)                  exit 0 ;;
@@ -224,6 +225,14 @@ for extra in b2 b3 b4; do crew role add "$extra" --agent claude --no-worktree >/
 crew start --no-attach >/dev/null
 check "right column with terminal splits in quarters" file_has "$WORK/log/herdr" "--direction down --ratio 0.250"
 check "agents past four get another tab"     file_has "$WORK/log/herdr" "--label agents 2"
+saved_terminal() { awk '$1 == "terminal" { print $2 }' "$R/.crew/state/session"; }
+saved_terminal > "$WORK/log/herdr-gone"
+LAST_FIRST_TAB="$(saved_pane "$R" b2)"
+: > "$WORK/log/herdr"
+crew start --no-attach >/dev/null
+check "a closed terminal returns under the first tab's last agent" file_has "$WORK/log/herdr" "pane split $LAST_FIRST_TAB --direction down"
+check "revive splits only the terminal"      test "$(grep -c '^pane split' "$WORK/log/herdr")" -eq 1
+rm -f "$WORK/log/herdr-gone"
 crew stop >/dev/null
 rm -f "$WORK/bin/herdr"
 

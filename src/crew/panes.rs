@@ -102,10 +102,24 @@ fn revive_terminal(ctx: &Ctx) {
     if ctx.state.get("terminal").is_some_and(|pane| ctx.mux.pane_exists(&pane)) {
         return;
     }
-    let Some(anchor) = any_live(ctx) else { return };
-    if let Some(pane) = ctx.mux.split(ctx, HUMAN, &anchor, Direction::Down, 0.5) {
+    let live = first_tab_live_panes(ctx);
+    let Some(last) = live.last() else { return };
+    // Rejoin the right column under its last pane, or open it if only the left pane is left.
+    let direction = if live.len() > 1 { Direction::Down } else { Direction::Right };
+    if let Some(pane) = ctx.mux.split(ctx, HUMAN, last, direction, 0.5) {
         ctx.state.set("terminal", &pane);
     }
+}
+
+// The panes of the first tab's roles, in layout order: the left pane, then the right column.
+fn first_tab_live_panes(ctx: &Ctx) -> Vec<String> {
+    let roles = ctx.roles();
+    let first_tab = roles.chunks(ctx.config.panes_per_tab()).next().unwrap_or_default();
+    first_tab
+        .iter()
+        .filter_map(|role| ctx.state.get(&pane_key(role)))
+        .filter(|pane| ctx.mux.pane_exists(pane))
+        .collect()
 }
 
 fn pane_for(ctx: &Ctx, role: &str) -> Option<String> {
