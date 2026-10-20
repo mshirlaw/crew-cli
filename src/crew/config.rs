@@ -260,7 +260,7 @@ pub fn write_global_config(path: &Path, mux: MuxKind) -> Result<()> {
 }
 
 pub fn first_installed(programs: &[&str]) -> String {
-    programs.iter().find(|p| util::has(p)).unwrap_or(&programs[0]).to_string()
+    (*programs.iter().find(|p| util::has(p)).unwrap_or(&programs[0])).to_string()
 }
 
 fn parse_file(path: &Path) -> Result<DocumentMut> {

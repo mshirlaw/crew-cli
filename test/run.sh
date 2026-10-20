@@ -98,6 +98,7 @@ case "\$1 \$2" in
   "workspace get")    test -f "$WORK/log/herdr-ws-\$3" ;;
   "workspace close")  rm -f "$WORK/log/herdr-ws-\$3" ;;
   "workspace create") touch "$WORK/log/herdr-ws-w1"; echo '{"result":{"workspace":{"workspace_id":"w1"},"tab":{"tab_id":"w1:t1"},"root_pane":{"pane_id":"w1:p1"}}}' ;;
+  "pane get")         ! grep -qx "\$3" "$WORK/log/herdr-gone" 2>/dev/null ;;
   "pane split")       echo "{\"result\":{\"pane\":{\"pane_id\":\"w1:p\$n\"}}}" ;;
   "tab create")       echo "{\"result\":{\"tab\":{\"tab_id\":\"w1:t\$n\"},\"root_pane\":{\"pane_id\":\"w1:b\$n\"}}}" ;;
   *)                  exit 0 ;;
@@ -211,7 +212,8 @@ check "refuses to open herdr inside tmux"    sh -c "TMUX=/tmp/fake,1,0 $CREW_RUN
 check "nothing is created when it refuses"   sh -c "! grep -q 'workspace create' '$WORK/log/herdr' 2>/dev/null"
 check "--no-attach still works inside tmux"  env TMUX=/tmp/fake,1,0 "$CREW_BIN" start --no-attach
 check "creates a workspace"                  file_has "$WORK/log/herdr" "workspace create"
-check "splits a pane per extra role"         test "$(grep -c '^pane split' "$WORK/log/herdr")" -eq 2
+check "splits a pane per extra role + terminal" test "$(grep -c '^pane split' "$WORK/log/herdr")" -eq 3
+check "terminal pane runs in the repo"       file_has "$WORK/log/herdr" "--env CREW_ROLE=human"
 check "opens the board tab"                  file_has "$WORK/log/herdr" "--label board"
 check "right column is split evenly"         file_has "$WORK/log/herdr" "--direction down --ratio 0.500"
 check "starts lead as a herdr agent"         file_has "$WORK/log/herdr" "agent start herdr-lead --kind claude"
@@ -221,8 +223,16 @@ check "stop closes the workspace"            sh -c "$CREW_RUN stop >/dev/null &&
 for extra in b2 b3 b4; do crew role add "$extra" --agent claude --no-worktree >/dev/null; done
 : > "$WORK/log/herdr"
 crew start --no-attach >/dev/null
-check "a fourth agent splits into thirds"    file_has "$WORK/log/herdr" "--direction down --ratio 0.333"
+check "right column with terminal splits in quarters" file_has "$WORK/log/herdr" "--direction down --ratio 0.250"
 check "agents past four get another tab"     file_has "$WORK/log/herdr" "--label agents 2"
+saved_terminal() { awk '$1 == "terminal" { print $2 }' "$R/.crew/state/session"; }
+saved_terminal > "$WORK/log/herdr-gone"
+LAST_FIRST_TAB="$(saved_pane "$R" b2)"
+: > "$WORK/log/herdr"
+crew start --no-attach >/dev/null
+check "a closed terminal returns under the first tab's last agent" file_has "$WORK/log/herdr" "pane split $LAST_FIRST_TAB --direction down"
+check "revive splits only the terminal"      test "$(grep -c '^pane split' "$WORK/log/herdr")" -eq 1
+rm -f "$WORK/log/herdr-gone"
 crew stop >/dev/null
 rm -f "$WORK/bin/herdr"
 
@@ -235,7 +245,7 @@ if have_tmux3; then
   check "refuses to open tmux inside herdr"  sh -c "HERDR_ENV=1 $CREW_RUN start 2>&1 | grep -q \"you're inside herdr, but this crew uses tmux\""
   check "start with tmux"                    crew start --no-attach
   check "session exists"                     tmux has-session -t "=crew-tmux"
-  check "three agent panes"                  test "$(tmux list-panes -t '=crew-tmux:agents' | wc -l | tr -d ' ')" -eq 3
+  check "three agents and a terminal"       test "$(tmux list-panes -t '=crew-tmux:agents' | wc -l | tr -d ' ')" -eq 4
   check "board window"                       output_has board tmux list-windows -t "=crew-tmux"
   check "lead started with its kickoff"      eventually file_has "$WORK/log/started-lead" "You are the lead agent"
   check "builder can reach .crew"            eventually file_has "$WORK/log/started-builder" "$R/.crew"
@@ -248,11 +258,13 @@ if have_tmux3; then
   check "builder received the broadcast"     eventually file_has "$WORK/log/inbox-builder" "from lead: standup"
   check "lead did not message itself"        sh -c "! grep -q standup '$WORK/log/inbox-lead' 2>/dev/null"
   check "restart one agent"                  crew restart builder
-  check "still three panes after restart"    test "$(tmux list-panes -t '=crew-tmux:agents' | wc -l | tr -d ' ')" -eq 3
+  check "still four panes after restart"     test "$(tmux list-panes -t '=crew-tmux:agents' | wc -l | tr -d ' ')" -eq 4
+  check "terminal pane is saved apart from roles" sh -c "grep -q '^terminal ' .crew/state/session && ! grep -q '^pane:human' .crew/state/session"
   check "restarted agent is told it was"     eventually file_has "$WORK/log/started-builder" "You were restarted"
   pkill -P "$(tmux display -p -t "$(saved_pane "$R" reviewer)" '#{pane_pid}')"
   check "status notices a dead agent"        eventually output_has "reviewer   gemini   stopped" crew status
   check "start revives it"                   output_has "reviewer → $WORK/bin/gemini launched" crew start --no-attach
+  check "start recreates a closed terminal"  sh -c "tmux kill-pane -t \"\$(awk '\$1 == \"terminal\" {print \$2}' .crew/state/session)\" && $CREW_RUN start --no-attach >/dev/null && test \"\$(tmux list-panes -t '=crew-tmux:agents' | wc -l | tr -d ' ')\" -eq 4"
   check "revived agent is running"           eventually output_has "reviewer   gemini   running" crew status
 
   set_repo_setting "$R" 'stall_timeout = 1'
@@ -278,7 +290,7 @@ if have_tmux3; then
   check "teardown removes worktrees"         sh -c "! ls -d '$HOME'/.crew/worktrees/tmux-*/builder 2>/dev/null"
   for extra in b2 b3 b4; do crew role add "$extra" --agent claude --no-worktree >/dev/null; done
   crew start --no-attach >/dev/null
-  check "four panes in the first window"     test "$(tmux list-panes -t '=crew-tmux:agents' | wc -l | tr -d ' ')" -eq 4
+  check "four agents and a terminal in window 1" test "$(tmux list-panes -t '=crew-tmux:agents' | wc -l | tr -d ' ')" -eq 5
   check "the rest go in a second window"     test "$(tmux list-panes -t '=crew-tmux:agents 2' | wc -l | tr -d ' ')" -eq 2
   check "stacked panes are the same height"  test "$(tmux list-panes -t '=crew-tmux:agents' -F '#{pane_left} #{pane_height}' | awk '$1 > 0 {print $2}' | sort -u | wc -l | tr -d ' ')" -le 2
   crew stop >/dev/null
