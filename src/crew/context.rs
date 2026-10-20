@@ -112,3 +112,86 @@ mod tests {
         assert_eq!(slugify("--x--"), "x");
     }
 }
+
+#[cfg(test)]
+mod ctx_tests {
+    use super::*;
+    use crate::crew::testutil::{fixture, ROLES};
+
+    #[test]
+    fn worktree_dirs_are_per_repo_and_per_role() {
+        let f = fixture(ROLES);
+        let base = f.ctx.worktree_base();
+        let name = base.file_name().unwrap().to_string_lossy().to_string();
+        assert!(name.starts_with("my-repo-") && name.len() == "my-repo-".len() + 6, "{name}");
+        assert_eq!(base, f.ctx.worktree_base());
+        assert_eq!(f.ctx.role_dir("builder"), base.join("builder"));
+        assert!(base.starts_with(f.dir.join("wt")));
+    }
+
+    #[test]
+    fn same_named_repos_in_different_places_get_different_worktree_dirs() {
+        let mut f = fixture(ROLES);
+        let before = f.ctx.worktree_base();
+        f.ctx.root = PathBuf::from("/elsewhere/my-repo");
+        assert_ne!(f.ctx.worktree_base(), before);
+    }
+
+    #[test]
+    fn roles_without_a_worktree_and_the_human_work_in_the_main_checkout() {
+        let f = fixture(ROLES);
+        assert_eq!(f.ctx.role_dir("lead"), f.ctx.root);
+        assert_eq!(f.ctx.role_dir(HUMAN), f.ctx.root);
+    }
+
+    #[test]
+    fn a_role_named_human_never_gets_a_worktree() {
+        let f = fixture("[roles.human]\nworktree = true\n");
+        assert_eq!(f.ctx.role_dir(HUMAN), f.ctx.root);
+    }
+
+    #[test]
+    fn roles_are_listed_in_config_order_and_looked_up_by_name() {
+        let f = fixture(ROLES);
+        assert_eq!(f.ctx.roles(), ["lead", "builder", "reviewer"]);
+        assert!(f.ctx.role_exists("builder"));
+        assert!(!f.ctx.role_exists("tester"));
+    }
+
+    #[test]
+    fn base_branch_defaults_to_main_and_ignores_an_empty_setting() {
+        assert_eq!(fixture("").ctx.base_branch(), "main");
+        assert_eq!(fixture("base_branch = \"\"").ctx.base_branch(), "main");
+        assert_eq!(fixture("base_branch = \"trunk\"").ctx.base_branch(), "trunk");
+    }
+
+    #[test]
+    fn names_and_files_are_derived_from_the_slug_and_crew_folder() {
+        let f = fixture(ROLES);
+        assert_eq!(f.ctx.agent_name("lead"), "my-repo-lead");
+        assert_eq!(f.ctx.file("board.md"), f.ctx.crew.join("board.md"));
+    }
+
+    #[test]
+    fn require_crew_wants_a_repo_config() {
+        let f = fixture(ROLES);
+        let err = f.ctx.require_crew().unwrap_err().to_string();
+        assert!(err.contains("crew setup"));
+        std::fs::write(f.ctx.file("config.toml"), "").unwrap();
+        f.ctx.require_crew().unwrap();
+    }
+
+    #[test]
+    fn slugs_cover_odd_names() {
+        assert_eq!(slugify(""), "r");
+        assert_eq!(slugify("___"), "r");
+        assert_eq!(slugify("Über Repo"), "ber-repo");
+        assert_eq!(slugify("sixteen-chars-xx-y"), "sixteen-chars-xx");
+    }
+
+    #[test]
+    fn the_repo_root_is_found_from_inside_a_checkout() {
+        let root = repo_root().unwrap();
+        assert!(root.join(".git").exists());
+    }
+}

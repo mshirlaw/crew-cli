@@ -41,3 +41,52 @@ pub fn default_roles(lead: &str, builder: &str, reviewer: &str) -> String {
          \n[roles.reviewer]\nagent = \"{reviewer}\"\nworktree = true\n"
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_sample_config_is_valid_toml() {
+        assert!(GLOBAL_CONFIG.parse::<toml_edit::DocumentMut>().is_ok());
+    }
+
+    #[test]
+    fn built_in_roles_have_templates() {
+        for role in ["lead", "builder", "reviewer", "tester"] {
+            assert!(role_template(role).starts_with("# Role:"), "{role}");
+        }
+    }
+
+    #[test]
+    fn unknown_roles_get_a_stub_that_says_how_to_edit_it() {
+        let text = role_template("zz-no-such-role");
+        assert!(text.starts_with("# Role: zz-no-such-role"));
+        assert!(text.contains("crew role edit zz-no-such-role"));
+    }
+
+    #[test]
+    fn repo_config_header_sets_the_base_branch_above_any_section() {
+        let text = repo_config_header("develop");
+        assert!(text.contains("\nbase_branch = \"develop\"\n"));
+        let doc: toml_edit::DocumentMut = text.parse().unwrap();
+        assert_eq!(doc["base_branch"].as_str(), Some("develop"));
+    }
+
+    #[test]
+    fn default_roles_name_each_agent_and_the_lead_has_no_worktree() {
+        let doc: toml_edit::DocumentMut = default_roles("claude", "codex", "gemini").parse().unwrap();
+        assert_eq!(doc["roles"]["lead"]["agent"].as_str(), Some("claude"));
+        assert_eq!(doc["roles"]["builder"]["agent"].as_str(), Some("codex"));
+        assert_eq!(doc["roles"]["reviewer"]["agent"].as_str(), Some("gemini"));
+        assert_eq!(doc["roles"]["lead"]["worktree"].as_bool(), Some(false));
+        assert_eq!(doc["roles"]["builder"]["worktree"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn protocol_rules_mention_the_commands_agents_use() {
+        for needle in ["crew say", "crew task add", "notes/"] {
+            assert!(PROTOCOL_RULES.contains(needle), "{needle}");
+        }
+    }
+}

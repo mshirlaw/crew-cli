@@ -65,3 +65,35 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 }
+
+#[cfg(test)]
+mod extra_tests {
+    use crate::crew::testutil::fixture;
+
+    #[test]
+    fn missing_file_has_no_keys() {
+        let f = fixture("");
+        assert_eq!(f.ctx.state.get("ws"), None);
+    }
+
+    #[test]
+    fn keys_are_matched_whole_and_values_keep_spaces() {
+        let f = fixture("");
+        f.ctx.state.set("pane", "a");
+        f.ctx.state.set("pane:lead", "b c");
+        assert_eq!(f.ctx.state.get("pane").as_deref(), Some("a"));
+        assert_eq!(f.ctx.state.get("pane:lead").as_deref(), Some("b c"));
+        f.ctx.state.set("pane", "");
+        assert_eq!(f.ctx.state.get("pane"), None);
+        assert_eq!(f.ctx.state.get("pane:lead").as_deref(), Some("b c"));
+    }
+
+    #[test]
+    fn clear_forgets_everything() {
+        let f = fixture("");
+        f.ctx.state.set("ws", "w1");
+        f.ctx.state.clear();
+        assert_eq!(f.ctx.state.get("ws"), None);
+        f.ctx.state.clear();
+    }
+}

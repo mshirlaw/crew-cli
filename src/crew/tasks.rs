@@ -159,3 +159,137 @@ mod tests {
         assert_eq!(one_line("a\tb\nc"), "a b c");
     }
 }
+
+#[cfg(test)]
+mod store_tests {
+    use super::*;
+    use crate::crew::testutil::{fixture, ROLES};
+
+    fn change(field: &str, value: &str) -> Vec<(String, String)> {
+        vec![(field.to_string(), value.to_string())]
+    }
+
+    #[test]
+    fn ids_count_up_from_one_and_new_tasks_are_todo() {
+        let f = fixture(ROLES);
+        assert_eq!(add(&f.ctx, "builder", "first", "n1").unwrap(), 1);
+        assert_eq!(add(&f.ctx, "reviewer", "second", "").unwrap(), 2);
+        let tasks = load(&f.ctx);
+        assert_eq!(
+            tasks[0],
+            Task { id: 1, status: "todo".into(), owner: "builder".into(), title: "first".into(), notes: "n1".into() }
+        );
+        assert_eq!(tasks[1].status, "todo");
+    }
+
+    #[test]
+    fn ids_are_not_reused_after_the_highest_is_done() {
+        let f = fixture(ROLES);
+        add(&f.ctx, "builder", "a", "").unwrap();
+        update(&f.ctx, 1, &change("status", "done")).unwrap();
+        assert_eq!(add(&f.ctx, "builder", "b", "").unwrap(), 2);
+    }
+
+    #[test]
+    fn every_change_regenerates_tasks_md() {
+        let f = fixture(ROLES);
+        add(&f.ctx, "builder", "ship it", "").unwrap();
+        let md = std::fs::read_to_string(f.ctx.file("tasks.md")).unwrap();
+        assert!(md.contains("| 1 | todo | builder | ship it |  |"));
+        update(&f.ctx, 1, &change("status", "doing")).unwrap();
+        let md = std::fs::read_to_string(f.ctx.file("tasks.md")).unwrap();
+        assert!(md.contains("| 1 | doing | builder | ship it |  |"));
+    }
+
+    #[test]
+    fn update_changes_only_the_named_fields_of_that_task() {
+        let f = fixture(ROLES);
+        add(&f.ctx, "builder", "a", "old").unwrap();
+        add(&f.ctx, "builder", "b", "keep").unwrap();
+        let changes = vec![("owner".to_string(), "reviewer".to_string()), ("notes".to_string(), "new".to_string())];
+        update(&f.ctx, 1, &changes).unwrap();
+        let tasks = load(&f.ctx);
+        assert_eq!(
+            (tasks[0].owner.as_str(), tasks[0].notes.as_str(), tasks[0].status.as_str()),
+            ("reviewer", "new", "todo")
+        );
+        assert_eq!((tasks[1].owner.as_str(), tasks[1].notes.as_str()), ("builder", "keep"));
+    }
+
+    #[test]
+    fn updating_an_unknown_task_changes_nothing() {
+        let f = fixture(ROLES);
+        add(&f.ctx, "builder", "a", "").unwrap();
+        update(&f.ctx, 9, &change("status", "done")).unwrap();
+        assert_eq!(load(&f.ctx).len(), 1);
+        assert_eq!(load(&f.ctx)[0].status, "todo");
+    }
+
+    #[test]
+    fn exists_checks_the_id() {
+        let f = fixture(ROLES);
+        add(&f.ctx, "builder", "a", "").unwrap();
+        assert!(exists(&f.ctx, 1));
+        assert!(!exists(&f.ctx, 2));
+    }
+
+    #[test]
+    fn open_for_counts_only_todo_and_doing_tasks_of_the_owner() {
+        let f = fixture(ROLES);
+        for status in ["todo", "doing", "review", "blocked", "done"] {
+            let id = add(&f.ctx, "builder", status, "").unwrap();
+            update(&f.ctx, id, &change("status", status)).unwrap();
+        }
+        add(&f.ctx, "reviewer", "theirs", "").unwrap();
+        assert_eq!(open_for(&f.ctx, "builder"), [1, 2]);
+        assert_eq!(open_for(&f.ctx, "reviewer"), [6]);
+        assert!(open_for(&f.ctx, "lead").is_empty());
+    }
+
+    #[test]
+    fn init_creates_empty_files_and_keeps_existing_tasks() {
+        let f = fixture(ROLES);
+        init(&f.ctx).unwrap();
+        assert!(f.ctx.file("tasks.tsv").exists());
+        assert!(std::fs::read_to_string(f.ctx.file("tasks.md")).unwrap().contains("| id | status |"));
+        add(&f.ctx, "builder", "a", "").unwrap();
+        init(&f.ctx).unwrap();
+        assert_eq!(load(&f.ctx).len(), 1);
+    }
+
+    #[test]
+    fn parse_skips_junk_and_fills_missing_fields() {
+        let tasks = parse("not-a-number\tx\n\n3\tdoing\n");
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(
+            tasks[0],
+            Task { id: 3, status: "doing".into(), owner: String::new(), title: String::new(), notes: String::new() }
+        );
+    }
+
+    #[test]
+    fn many_threads_adding_at_once_lose_nothing() {
+        let f = fixture(ROLES);
+        let (crew, state) = (f.ctx.crew.clone(), f.ctx.state.dir().to_path_buf());
+        let handles: Vec<_> = (0..8)
+            .map(|i| {
+                let (crew, state) = (crew.clone(), state.clone());
+                std::thread::spawn(move || {
+                    let ctx = crate::crew::testutil::ctx_at(&crew, &state);
+                    for n in 0..5 {
+                        add(&ctx, "builder", &format!("t{i}-{n}"), "").unwrap();
+                    }
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        let tasks = load(&f.ctx);
+        assert_eq!(tasks.len(), 40);
+        let mut ids: Vec<u32> = tasks.iter().map(|t| t.id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), 40);
+    }
+}

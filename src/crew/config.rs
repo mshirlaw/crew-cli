@@ -76,6 +76,16 @@ impl Config {
         Ok(Config { global_path, repo_path, global, repo })
     }
 
+    #[cfg(test)]
+    pub fn from_toml(global: &str, repo: &str) -> Config {
+        Config {
+            global_path: PathBuf::from("/nonexistent/global.toml"),
+            repo_path: None,
+            global: global.parse().unwrap(),
+            repo: repo.parse().unwrap(),
+        }
+    }
+
     fn item(&self, path: &[&str]) -> Option<&Item> {
         lookup(&self.repo, path).or_else(|| lookup(&self.global, path))
     }
@@ -260,7 +270,7 @@ pub fn write_global_config(path: &Path, mux: MuxKind) -> Result<()> {
 }
 
 pub fn first_installed(programs: &[&str]) -> String {
-    (*programs.iter().find(|p| util::has(p)).unwrap_or(&programs[0])).to_string()
+    programs.iter().copied().find(|p| util::has(p)).unwrap_or(programs[0]).to_string()
 }
 
 fn parse_file(path: &Path) -> Result<DocumentMut> {
@@ -310,12 +320,7 @@ mod tests {
     use super::*;
 
     fn config(global: &str, repo: &str) -> Config {
-        Config {
-            global_path: PathBuf::from("/nonexistent/global.toml"),
-            repo_path: None,
-            global: global.parse().unwrap(),
-            repo: repo.parse().unwrap(),
-        }
+        Config::from_toml(global, repo)
     }
 
     #[test]
@@ -356,5 +361,261 @@ mod tests {
         assert_eq!(c.agent_kind("claude").as_deref(), Some("claude"));
         assert_eq!(c.agent_kind("codex"), None);
         assert_eq!(c.agent_kind("mytool"), None);
+    }
+}
+
+#[cfg(test)]
+mod more_tests {
+    use super::*;
+
+    fn config(global: &str, repo: &str) -> Config {
+        Config::from_toml(global, repo)
+    }
+
+    fn temp_file(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("crew-config-test-{}-{name}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("config.toml")
+    }
+
+    fn cleanup(path: &Path) {
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn defaults_apply_when_nothing_is_set() {
+        let c = config("", "");
+        assert_eq!(c.multiplexer().unwrap(), MuxKind::Herdr);
+        assert_eq!(c.stall_timeout(), 600);
+        assert_eq!(c.panes_per_tab(), 4);
+        assert_eq!(c.watch_interval(), 30);
+        assert!((c.paste_delay() - 0.3).abs() < f64::EPSILON);
+        assert_eq!(c.base_branch(), None);
+        assert_eq!(c.worktree_dir_text(), "~/.crew/worktrees");
+        assert!(c.roles().is_empty());
+    }
+
+    #[test]
+    fn multiplexer_names_round_trip() {
+        assert_eq!(config("multiplexer = \"tmux\"", "").multiplexer().unwrap(), MuxKind::Tmux);
+        assert_eq!(MuxKind::Tmux.name(), "tmux");
+        assert_eq!(MuxKind::Herdr.name(), "herdr");
+        let err = config("multiplexer = 3", "").multiplexer().unwrap_err().to_string();
+        assert!(err.contains("must be \"herdr\" or \"tmux\""), "{err}");
+    }
+
+    #[test]
+    fn stall_timeout_accepts_zero_and_falls_back_on_nonsense() {
+        assert_eq!(config("stall_timeout = 0", "").stall_timeout(), 0);
+        assert_eq!(config("stall_timeout = 90", "").stall_timeout(), 90);
+        assert_eq!(config("stall_timeout = -5", "").stall_timeout(), 600);
+        assert_eq!(config("stall_timeout = \"soon\"", "").stall_timeout(), 600);
+    }
+
+    #[test]
+    fn counts_must_be_positive_whole_numbers() {
+        assert_eq!(config("panes_per_tab = 6", "").panes_per_tab(), 6);
+        assert_eq!(config("panes_per_tab = 0", "").panes_per_tab(), 4);
+        assert_eq!(config("panes_per_tab = -1", "").panes_per_tab(), 4);
+        assert_eq!(config("watch_interval = 5", "").watch_interval(), 5);
+        assert_eq!(config("watch_interval = 0", "").watch_interval(), 30);
+        assert_eq!(config("watch_interval = \"x\"", "").watch_interval(), 30);
+    }
+
+    #[test]
+    fn paste_delay_takes_integers_and_floats_but_not_negatives_or_text() {
+        assert!((config("paste_delay = 2", "").paste_delay() - 2.0).abs() < f64::EPSILON);
+        assert!((config("paste_delay = 0.75", "").paste_delay() - 0.75).abs() < f64::EPSILON);
+        assert!((config("paste_delay = 0", "").paste_delay()).abs() < f64::EPSILON);
+        assert!((config("paste_delay = -1", "").paste_delay() - 0.3).abs() < f64::EPSILON);
+        assert!((config("paste_delay = \"slow\"", "").paste_delay() - 0.3).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn worktree_dir_expands_a_leading_tilde() {
+        let c = config("worktree_dir = \"/var/wt\"", "");
+        assert_eq!(c.worktree_dir(), PathBuf::from("/var/wt"));
+        assert!(!config("worktree_dir = \"~/wt\"", "").worktree_dir().starts_with("~"));
+    }
+
+    #[test]
+    fn only_the_repo_file_defines_roles() {
+        let c = config("[roles.global]\nagent = \"claude\"\n", "[roles.a]\n[roles.b]\n");
+        assert_eq!(c.roles(), ["a", "b"]);
+        assert!(c.global_has_roles());
+        assert!(!config("", "[roles.a]\n").global_has_roles());
+    }
+
+    #[test]
+    fn role_settings_have_defaults() {
+        let c = config("", "[roles.a]\nagent = \"codex\"\nworktree = false\n[roles.b]\n");
+        assert_eq!(c.role_agent("a"), "codex");
+        assert!(!c.role_has_worktree("a"));
+        assert!(c.role_has_worktree("b"));
+        assert!(c.role_has_worktree("unknown"));
+        assert!(["claude", "codex", "gemini"].contains(&c.role_agent("b").as_str()));
+    }
+
+    #[test]
+    fn built_in_agent_commands_include_the_crew_folder() {
+        let c = config("", "");
+        assert_eq!(c.agent_command("claude"), ["claude", "--add-dir", "{crew}", "--"]);
+        let codex = c.agent_command("codex");
+        assert!(codex.windows(2).any(|w| w == ["--sandbox", "workspace-write"]));
+        assert!(codex.contains(&"{crew}".to_string()));
+        assert!(c.agent_command("gemini").contains(&"--include-directories".to_string()));
+    }
+
+    #[test]
+    fn unknown_agents_run_as_their_own_name() {
+        assert_eq!(config("", "").agent_command("aider"), ["aider"]);
+    }
+
+    #[test]
+    fn string_commands_keep_quoted_words_together() {
+        let c = config("", "[agents.x]\ncommand = \"x --dir '/my path' -v\"\n");
+        assert_eq!(c.agent_command("x"), ["x", "--dir", "/my path", "-v"]);
+    }
+
+    #[test]
+    fn an_unbalanced_quote_falls_back_to_whitespace_splitting() {
+        let c = config("", "[agents.x]\ncommand = \"x 'oops\"\n");
+        assert_eq!(c.agent_command("x"), ["x", "'oops"]);
+    }
+
+    #[test]
+    fn empty_or_wrongly_typed_commands_fall_back_to_the_agent_name() {
+        assert_eq!(config("", "[agents.x]\ncommand = []\n").agent_command("x"), ["x"]);
+        assert_eq!(config("", "[agents.x]\ncommand = 5\n").agent_command("x"), ["x"]);
+    }
+
+    #[test]
+    fn list_commands_ignore_non_string_entries() {
+        let c = config("", "[agents.x]\ncommand = [\"x\", 1, \"-v\"]\n");
+        assert_eq!(c.agent_command("x"), ["x", "-v"]);
+    }
+
+    #[test]
+    fn agent_kind_defaults_to_known_agents_and_can_be_blanked() {
+        let c = config("", "[agents.claude]\nkind = \"\"\n[agents.mine]\nkind = \"codex\"\n");
+        assert_eq!(c.agent_kind("claude"), None);
+        assert_eq!(c.agent_kind("mine").as_deref(), Some("codex"));
+        assert_eq!(c.agent_kind("codex").as_deref(), Some("codex"));
+        assert_eq!(c.agent_kind("aider"), None);
+    }
+
+    #[test]
+    fn set_role_adds_and_updates_while_keeping_comments() {
+        let path = temp_file("set-role");
+        let mut c = config("", "# my notes\nbase_branch = \"main\"\n\n[roles.a]\nagent = \"claude\"\n");
+        c.repo_path = Some(path.clone());
+        c.set_role("a", None, Some(false)).unwrap();
+        c.set_role("b", Some("codex"), None).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# my notes"));
+        let reloaded = config("", &text);
+        assert_eq!(reloaded.roles(), ["a", "b"]);
+        assert_eq!(reloaded.role_agent("a"), "claude");
+        assert!(!reloaded.role_has_worktree("a"));
+        assert_eq!(reloaded.role_agent("b"), "codex");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn set_role_creates_the_roles_table_when_missing() {
+        let path = temp_file("set-role-new");
+        let mut c = config("", "");
+        c.repo_path = Some(path.clone());
+        c.set_role("solo", Some("gemini"), Some(true)).unwrap();
+        assert_eq!(config("", &std::fs::read_to_string(&path).unwrap()).roles(), ["solo"]);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn set_role_refuses_a_roles_value_that_is_not_a_table() {
+        let mut c = config("", "roles = 3\n");
+        c.repo_path = Some(temp_file("bad-roles"));
+        assert!(c.set_role("a", None, None).is_err());
+        let mut c = config("", "[roles]\na = 1\n");
+        c.repo_path = Some(temp_file("bad-role"));
+        let err = c.set_role("a", None, None).unwrap_err().to_string();
+        assert!(err.contains("roles.a"), "{err}");
+    }
+
+    #[test]
+    fn saving_without_a_repo_file_is_an_error() {
+        let mut c = config("", "");
+        assert!(c.set_role("a", None, None).is_err());
+    }
+
+    #[test]
+    fn remove_role_drops_only_that_role() {
+        let path = temp_file("remove-role");
+        let mut c = config("", "[roles.a]\n[roles.b]\n");
+        c.repo_path = Some(path.clone());
+        c.remove_role("a").unwrap();
+        assert_eq!(c.roles(), ["b"]);
+        assert_eq!(config("", &std::fs::read_to_string(&path).unwrap()).roles(), ["b"]);
+        c.remove_role("missing").unwrap();
+        assert_eq!(c.roles(), ["b"]);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn load_reads_the_repo_file_and_rejects_bad_toml() {
+        let path = temp_file("load");
+        std::fs::write(&path, "stall_timeout = 5\n").unwrap();
+        assert_eq!(Config::load(Some(path.clone())).unwrap().stall_timeout(), 5);
+        std::fs::write(&path, "stall_timeout = [\n").unwrap();
+        let err = Config::load(Some(path.clone())).err().unwrap().to_string();
+        assert!(err.contains("is not valid TOML"), "{err}");
+        std::fs::remove_file(&path).unwrap();
+        assert!(Config::load(Some(path.clone())).is_ok());
+        cleanup(&path);
+    }
+
+    #[test]
+    fn write_global_config_picks_the_multiplexer_and_makes_folders() {
+        let path = temp_file("write-global");
+        let nested = path.parent().unwrap().join("a/b/config.toml");
+        write_global_config(&nested, MuxKind::Tmux).unwrap();
+        let text = std::fs::read_to_string(&nested).unwrap();
+        assert_eq!(config(&text, "").multiplexer().unwrap(), MuxKind::Tmux);
+        write_global_config(&nested, MuxKind::Herdr).unwrap();
+        let text = std::fs::read_to_string(&nested).unwrap();
+        assert_eq!(config(&text, "").multiplexer().unwrap(), MuxKind::Herdr);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn saving_roles_to_global_replaces_the_old_ones_and_keeps_other_settings() {
+        let path = temp_file("save-global");
+        std::fs::write(&path, "paste_delay = 2\n\n[roles.old]\nagent = \"claude\"\n").unwrap();
+        let mut c = config("", "[roles.new]\nagent = \"codex\"\n");
+        c.global_path = path.clone();
+        c.global = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        c.save_roles_to_global().unwrap();
+        let saved = config(&std::fs::read_to_string(&path).unwrap(), "");
+        assert!((saved.paste_delay() - 2.0).abs() < f64::EPSILON);
+        assert!(c.global_roles_text().contains("roles.new"));
+        assert!(!c.global_roles_text().contains("roles.old"));
+        cleanup(&path);
+    }
+
+    #[test]
+    fn saving_roles_creates_the_global_config_when_missing() {
+        let path = temp_file("save-global-new");
+        let mut c = config("", "[roles.a]\nagent = \"claude\"\n");
+        c.global_path = path.clone();
+        c.save_roles_to_global().unwrap();
+        assert!(path.exists());
+        assert!(c.global_has_roles());
+        cleanup(&path);
+    }
+
+    #[test]
+    fn first_installed_falls_back_to_the_first_name() {
+        assert_eq!(first_installed(&["crew-no-such-a", "crew-no-such-b"]), "crew-no-such-a");
+        assert_eq!(first_installed(&["crew-no-such-a", "sh"]), "sh");
     }
 }
