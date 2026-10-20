@@ -42,8 +42,15 @@ jobs:
       - name: Formatting
         run: cargo fmt --check
 
+      # Each finding becomes an annotation on the run, so it's readable without the full log.
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: |
+          echo "::notice::$(rustc --version)"
+          status=0
+          cargo clippy --all-targets --message-format=short -- -D warnings 2> clippy.out || status=$?
+          cat clippy.out
+          sed -nE 's/^([^ :]+):([0-9]+):([0-9]+): (error|warning): (.*)/::error file=\1,line=\2,col=\3::\5/p' clippy.out
+          exit "$status"
 
       - name: Unit tests
         run: cargo test
