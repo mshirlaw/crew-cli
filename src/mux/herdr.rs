@@ -74,7 +74,7 @@ impl Mux for Herdr {
 
     fn create_workspace(&self, ctx: &Ctx, role: &str) -> Result<()> {
         let dir = ctx.role_dir(role).display().to_string();
-        let label = format!("crew:{}", ctx.slug);
+        let label = format!("crew:{}", ctx.key);
         let mut args = vec!["workspace".to_string(), "create".into(), "--cwd".into(), dir, "--label".into(), label];
         args.extend(env_args(&ctx.crew, role));
         args.push("--no-focus".into());
@@ -89,7 +89,7 @@ impl Mux for Herdr {
         }
         ctx.state.set("ws", &ws);
         ctx.state.set(&format!("pane:{role}"), &pane);
-        ui::ok(format!("herdr workspace crew:{} ({ws})", ctx.slug));
+        ui::ok(format!("herdr workspace crew:{} ({ws})", ctx.key));
         Ok(())
     }
 
@@ -209,7 +209,7 @@ impl Mux for Herdr {
             run_ok("herdr", &["workspace", "focus", &ws]);
         }
         if std::env::var("HERDR_ENV").as_deref() == Ok("1") {
-            ui::info(format!("already inside herdr, switched to crew:{}", ctx.slug));
+            ui::info(format!("already inside herdr, switched to crew:{}", ctx.key));
             return Ok(());
         }
         let err = std::process::Command::new("herdr").exec();

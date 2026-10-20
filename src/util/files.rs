@@ -40,3 +40,24 @@ pub fn write_atomic(path: &Path, contents: &str) -> Result<()> {
     std::fs::write(&tmp, contents).with_context(|| format!("could not write {}", tmp.display()))?;
     std::fs::rename(&tmp, path).with_context(|| format!("could not write {}", path.display()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expand_home_only_expands_home_prefix() {
+        assert_eq!(expand_home("relative/path"), PathBuf::from("relative/path"));
+        assert_eq!(expand_home("~/crew"), home().join("crew"));
+        assert_eq!(expand_home("~other/crew"), PathBuf::from("~other/crew"));
+    }
+
+    #[test]
+    fn atomic_write_replaces_contents_without_leaving_temp_file() {
+        let path = std::env::temp_dir().join(format!("crew-files-test-{}", std::process::id()));
+        write_atomic(&path, "new contents").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new contents");
+        assert!(!path.with_file_name(format!("{}.tmp", path.file_name().unwrap().to_string_lossy())).exists());
+        let _ = std::fs::remove_file(path);
+    }
+}

@@ -362,15 +362,6 @@ mod tests {
         assert_eq!(c.agent_kind("codex"), None);
         assert_eq!(c.agent_kind("mytool"), None);
     }
-}
-
-#[cfg(test)]
-mod more_tests {
-    use super::*;
-
-    fn config(global: &str, repo: &str) -> Config {
-        Config::from_toml(global, repo)
-    }
 
     fn temp_file(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("crew-config-test-{}-{name}", std::process::id()));

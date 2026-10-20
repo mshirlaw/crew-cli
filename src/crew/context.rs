@@ -12,6 +12,7 @@ pub struct Ctx {
     pub root: PathBuf,
     pub crew: PathBuf,
     pub slug: String,
+    pub key: String,
     pub config: Config,
     pub state: State,
     pub mux: Box<dyn Mux>,
@@ -22,16 +23,12 @@ impl Ctx {
     pub fn load() -> Result<Ctx> {
         let discovered_root = repo_root();
         let env_crew = std::env::var_os("CREW_DIR").map(PathBuf::from).filter(|d| d.is_dir());
-        let (root, crew) = match (discovered_root, env_crew) {
-            (Some(root), Some(crew)) if crew.parent().is_some_and(|parent| parent == root) => (root, crew),
-            (Some(root), _) => (root.clone(), root.join(".crew")),
-            (None, Some(crew)) => (crew.parent().map(Path::to_path_buf).unwrap_or_default(), crew),
-            (None, None) => return Err(anyhow!("not inside a git repository")),
-        };
+        let (root, crew) = resolve_paths(discovered_root, env_crew)?;
         let config = Config::load(Some(crew.join("config.toml")))?;
         let mux = mux::make(config.multiplexer()?);
         let slug = slugify(&root.file_name().unwrap_or_default().to_string_lossy());
-        Ok(Ctx { state: State::new(crew.join("state")), root, crew, slug, config, mux })
+        let key = crew_key(&crew, &slug);
+        Ok(Ctx { state: State::new(crew.join("state")), root, crew, slug, key, config, mux })
     }
 
     pub fn reload(&mut self) -> Result<()> {
@@ -70,7 +67,7 @@ impl Ctx {
     }
 
     pub fn agent_name(&self, role: &str) -> String {
-        format!("{}-{role}", self.slug)
+        format!("{}-{role}", self.key)
     }
 
     pub fn base_branch(&self) -> String {
@@ -82,11 +79,24 @@ impl Ctx {
     }
 }
 
+fn resolve_paths(discovered_root: Option<PathBuf>, env_crew: Option<PathBuf>) -> Result<(PathBuf, PathBuf)> {
+    match (discovered_root, env_crew) {
+        (Some(root), Some(crew)) if crew.parent().is_some_and(|parent| parent == root) => Ok((root, crew)),
+        (Some(root), Some(_) | None) => Ok((root.clone(), root.join(".crew"))),
+        (None, Some(crew)) => Ok((crew.parent().map(Path::to_path_buf).unwrap_or_default(), crew)),
+        (None, None) => Err(anyhow!("not inside a git repository")),
+    }
+}
+
 // The main checkout's root, even when run from a worktree.
 pub fn repo_root() -> Option<PathBuf> {
-    let out = util::run_out("git", &["rev-parse", "--git-common-dir"])?;
+    repo_root_from(&std::env::current_dir().ok()?)
+}
+
+fn repo_root_from(dir: &Path) -> Option<PathBuf> {
+    let out = util::run_out("git", &["-C", &dir.display().to_string(), "rev-parse", "--git-common-dir"])?;
     let common = PathBuf::from(out.trim());
-    let common = if common.is_absolute() { common } else { std::env::current_dir().ok()?.join(common) };
+    let common = if common.is_absolute() { common } else { dir.join(common) };
     std::fs::canonicalize(common).ok()?.parent().map(Path::to_path_buf)
 }
 
@@ -100,9 +110,16 @@ pub fn slugify(name: &str) -> String {
     prefixed.chars().take(16).collect::<String>().trim_end_matches('-').to_string()
 }
 
+fn crew_key(root: &Path, slug: &str) -> String {
+    format!("{slug}-{}", &util::fingerprint(&root.to_string_lossy())[..6])
+}
+
 #[cfg(test)]
 mod tests {
-    use super::slugify;
+    use super::*;
+    use super::{crew_key, resolve_paths, slugify};
+    use crate::crew::testutil::{fixture, ROLES};
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn slugs_are_short_and_safe() {
@@ -111,12 +128,30 @@ mod tests {
         assert_eq!(slugify("a-really-long-repository-name"), "a-really-long-re");
         assert_eq!(slugify("--x--"), "x");
     }
-}
 
-#[cfg(test)]
-mod ctx_tests {
-    use super::*;
-    use crate::crew::testutil::{fixture, ROLES};
+    #[test]
+    fn keys_distinguish_crew_directories() {
+        assert_ne!(crew_key(Path::new("/repo/.crew-a"), "api"), crew_key(Path::new("/repo/.crew-b"), "api"));
+    }
+
+    #[test]
+    fn keys_distinguish_same_named_repositories() {
+        assert_ne!(crew_key(Path::new("/one/api/.crew"), "api"), crew_key(Path::new("/two/api/.crew"), "api"));
+    }
+
+    #[test]
+    fn stale_crew_dir_falls_back_to_current_repository() {
+        let root = PathBuf::from("/current-repo");
+        let paths = resolve_paths(Some(root.clone()), Some(PathBuf::from("/other-repo/.crew"))).unwrap();
+        assert_eq!(paths, (root.clone(), root.join(".crew")));
+    }
+
+    #[test]
+    fn crew_dir_is_used_from_a_worktree() {
+        let root = PathBuf::from("/current-repo");
+        let crew = root.join(".crew");
+        assert_eq!(resolve_paths(Some(root.clone()), Some(crew.clone())).unwrap(), (root, crew));
+    }
 
     #[test]
     fn worktree_dirs_are_per_repo_and_per_role() {
@@ -168,7 +203,7 @@ mod ctx_tests {
     #[test]
     fn names_and_files_are_derived_from_the_slug_and_crew_folder() {
         let f = fixture(ROLES);
-        assert_eq!(f.ctx.agent_name("lead"), "my-repo-lead");
+        assert_eq!(f.ctx.agent_name("lead"), "my-repo-abc123-lead");
         assert_eq!(f.ctx.file("board.md"), f.ctx.crew.join("board.md"));
     }
 
@@ -190,8 +225,22 @@ mod ctx_tests {
     }
 
     #[test]
-    fn the_repo_root_is_found_from_inside_a_checkout() {
-        let root = repo_root().unwrap();
-        assert!(root.join(".git").exists());
+    fn the_repo_root_is_found_from_a_checkout_and_from_a_subfolder() {
+        let f = fixture(ROLES);
+        let git = |args: &[&str]| assert!(util::run_ok("git", &[&["-C", f.ctx.root.to_str().unwrap()], args].concat()));
+        git(&["init", "-q"]);
+        let sub = f.ctx.root.join("a/b");
+        std::fs::create_dir_all(&sub).unwrap();
+        let root = std::fs::canonicalize(&f.ctx.root).unwrap();
+        assert_eq!(repo_root_from(&f.ctx.root), Some(root.clone()));
+        assert_eq!(repo_root_from(&sub), Some(root));
+    }
+
+    #[test]
+    fn there_is_no_repo_root_outside_a_checkout() {
+        let f = fixture(ROLES);
+        let outside = f.dir.join("plain");
+        std::fs::create_dir_all(&outside).unwrap();
+        assert_eq!(repo_root_from(&outside), None);
     }
 }

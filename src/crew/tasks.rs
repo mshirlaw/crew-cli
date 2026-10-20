@@ -129,6 +129,7 @@ pub fn init(ctx: &Ctx) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crew::testutil::{fixture, ROLES};
 
     #[test]
     fn tsv_round_trips() {
@@ -158,12 +159,6 @@ mod tests {
     fn values_stay_on_one_line() {
         assert_eq!(one_line("a\tb\nc"), "a b c");
     }
-}
-
-#[cfg(test)]
-mod store_tests {
-    use super::*;
-    use crate::crew::testutil::{fixture, ROLES};
 
     fn change(field: &str, value: &str) -> Vec<(String, String)> {
         vec![(field.to_string(), value.to_string())]

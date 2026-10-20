@@ -153,6 +153,7 @@ pub fn fixture(repo_toml: &str) -> Fixture {
         config: Config::from_toml("", &toml),
         mux: Box::new(FakeMux { state: Arc::clone(&fake), name: "tmux" }),
         slug: "my-repo".to_string(),
+        key: "my-repo-abc123".to_string(),
         root,
         crew,
     };
@@ -167,6 +168,7 @@ pub fn ctx_at(crew: &Path, state: &Path) -> Ctx {
         config: Config::from_toml("", ""),
         mux: Box::new(FakeMux { state: fake, name: "tmux" }),
         slug: "my-repo".to_string(),
+        key: "my-repo-abc123".to_string(),
         root: crew.parent().unwrap().to_path_buf(),
         crew: crew.to_path_buf(),
     }

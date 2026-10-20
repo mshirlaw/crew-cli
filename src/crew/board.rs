@@ -58,6 +58,8 @@ pub fn has_unanswered_message(board: &str, role: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::has_unanswered_message;
+    use super::*;
+    use crate::crew::testutil::{fixture, ROLES};
 
     const BOARD: &str = "# Crew board\n\n\
         ### 2026-10-20 03:00  crew → all\nCrew started\n\n\
@@ -76,12 +78,6 @@ mod tests {
     fn crew_messages_are_not_owed() {
         assert!(!has_unanswered_message("### 2026-10-20 03:00  crew → lead\nalert\n", "lead"));
     }
-}
-
-#[cfg(test)]
-mod extra_tests {
-    use super::*;
-    use crate::crew::testutil::{fixture, ROLES};
 
     #[test]
     fn posts_append_with_a_header_per_message() {

@@ -50,6 +50,7 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crew::testutil::fixture;
 
     #[test]
     fn set_get_and_remove() {
@@ -64,11 +65,6 @@ mod tests {
         assert_eq!(state.get("pane:lead"), None);
         let _ = std::fs::remove_dir_all(dir);
     }
-}
-
-#[cfg(test)]
-mod extra_tests {
-    use crate::crew::testutil::fixture;
 
     #[test]
     fn missing_file_has_no_keys() {

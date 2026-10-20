@@ -216,9 +216,9 @@ check "splits a pane per extra role + terminal" test "$(grep -c '^pane split' "$
 check "terminal pane runs in the repo"       file_has "$WORK/log/herdr" "--env CREW_ROLE=human"
 check "opens the board tab"                  file_has "$WORK/log/herdr" "--label board"
 check "right column is split evenly"         file_has "$WORK/log/herdr" "--direction down --ratio 0.500"
-check "starts lead as a herdr agent"         file_has "$WORK/log/herdr" "agent start herdr-lead --kind claude"
+check "starts lead as a herdr agent"         sh -c "grep -qE 'agent start herdr-[0-9a-z-]+-lead --kind claude' '$WORK/log/herdr'"
 check "passes .crew to codex"                file_has "$WORK/log/herdr" "--kind codex --pane"
-check "say goes through agent prompt"        sh -c "$CREW_RUN say builder hi >/dev/null && grep -q 'agent prompt herdr-builder' '$WORK/log/herdr'"
+check "say goes through agent prompt"        sh -c "$CREW_RUN say builder hi >/dev/null && grep -qE 'agent prompt herdr-[0-9a-z-]+-builder' '$WORK/log/herdr'"
 check "stop closes the workspace"            sh -c "$CREW_RUN stop >/dev/null && grep -q 'workspace close w1' '$WORK/log/herdr'"
 for extra in b2 b3 b4; do crew role add "$extra" --agent claude --no-worktree >/dev/null; done
 : > "$WORK/log/herdr"
@@ -244,9 +244,10 @@ if have_tmux3; then
   crew setup >/dev/null
   check "refuses to open tmux inside herdr"  sh -c "HERDR_ENV=1 $CREW_RUN start 2>&1 | grep -q \"you're inside herdr, but this crew uses tmux\""
   check "start with tmux"                    crew start --no-attach
-  check "session exists"                     tmux has-session -t "=crew-tmux"
-  check "three agents and a terminal"       test "$(tmux list-panes -t '=crew-tmux:agents' | wc -l | tr -d ' ')" -eq 4
-  check "board window"                       output_has board tmux list-windows -t "=crew-tmux"
+  TMUX_SESSION="$(awk '$1 == "ws" {print $2}' .crew/state/session)"
+  check "session exists"                     tmux has-session -t "=$TMUX_SESSION"
+  check "three agents and a terminal"       test "$(tmux list-panes -t "=$TMUX_SESSION:agents" | wc -l | tr -d ' ')" -eq 4
+  check "board window"                       output_has board tmux list-windows -t "=$TMUX_SESSION"
   check "lead started with its kickoff"      eventually file_has "$WORK/log/started-lead" "You are the lead agent"
   check "builder can reach .crew"            eventually file_has "$WORK/log/started-builder" "$R/.crew"
   BUILDER_DIR="$(tmux display -p -t "$(saved_pane "$R" builder)" '#{pane_current_path}')"
@@ -258,13 +259,13 @@ if have_tmux3; then
   check "builder received the broadcast"     eventually file_has "$WORK/log/inbox-builder" "from lead: standup"
   check "lead did not message itself"        sh -c "! grep -q standup '$WORK/log/inbox-lead' 2>/dev/null"
   check "restart one agent"                  crew restart builder
-  check "still four panes after restart"     test "$(tmux list-panes -t '=crew-tmux:agents' | wc -l | tr -d ' ')" -eq 4
+  check "still four panes after restart"     test "$(tmux list-panes -t "=$TMUX_SESSION:agents" | wc -l | tr -d ' ')" -eq 4
   check "terminal pane is saved apart from roles" sh -c "grep -q '^terminal ' .crew/state/session && ! grep -q '^pane:human' .crew/state/session"
   check "restarted agent is told it was"     eventually file_has "$WORK/log/started-builder" "You were restarted"
   pkill -P "$(tmux display -p -t "$(saved_pane "$R" reviewer)" '#{pane_pid}')"
   check "status notices a dead agent"        eventually output_has "reviewer   gemini   stopped" crew status
   check "start revives it"                   output_has "reviewer → $WORK/bin/gemini launched" crew start --no-attach
-  check "start recreates a closed terminal"  sh -c "tmux kill-pane -t \"\$(awk '\$1 == \"terminal\" {print \$2}' .crew/state/session)\" && $CREW_RUN start --no-attach >/dev/null && test \"\$(tmux list-panes -t '=crew-tmux:agents' | wc -l | tr -d ' ')\" -eq 4"
+  check "start recreates a closed terminal"  sh -c "tmux kill-pane -t \"\$(awk '\$1 == \"terminal\" {print \$2}' .crew/state/session)\" && $CREW_RUN start --no-attach >/dev/null && test \"\$(tmux list-panes -t '=$TMUX_SESSION:agents' | wc -l | tr -d ' ')\" -eq 4"
   check "revived agent is running"           eventually output_has "reviewer   gemini   running" crew status
 
   set_repo_setting "$R" 'stall_timeout = 1'
@@ -284,15 +285,16 @@ if have_tmux3; then
   check "watcher is running"                 sh -c "kill -0 \"\$(cat .crew/state/watch.pid)\""
   WATCH_PID="$(cat .crew/state/watch.pid)"
   check "stop closes the session"            crew stop
-  check "session is gone"                    sh -c "! tmux has-session -t '=crew-tmux' 2>/dev/null"
+  check "session is gone"                    sh -c "! tmux has-session -t '=$TMUX_SESSION' 2>/dev/null"
   check "stop ends the watcher"              eventually sh -c "case \"\$(ps -p $WATCH_PID -o stat= 2>/dev/null)\" in ''|Z*) true ;; *) false ;; esac"
   check "teardown keeps branches"            sh -c "echo y | $CREW_RUN teardown >/dev/null && git -C '$R' show-ref -q refs/heads/crew/builder"
   check "teardown removes worktrees"         sh -c "! ls -d '$HOME'/.crew/worktrees/tmux-*/builder 2>/dev/null"
   for extra in b2 b3 b4; do crew role add "$extra" --agent claude --no-worktree >/dev/null; done
   crew start --no-attach >/dev/null
-  check "four agents and a terminal in window 1" test "$(tmux list-panes -t '=crew-tmux:agents' | wc -l | tr -d ' ')" -eq 5
-  check "the rest go in a second window"     test "$(tmux list-panes -t '=crew-tmux:agents 2' | wc -l | tr -d ' ')" -eq 2
-  check "stacked panes are the same height"  test "$(tmux list-panes -t '=crew-tmux:agents' -F '#{pane_left} #{pane_height}' | awk '$1 > 0 {print $2}' | sort -u | wc -l | tr -d ' ')" -le 2
+  TMUX_SESSION="$(awk '$1 == "ws" {print $2}' .crew/state/session)"
+  check "four agents and a terminal in window 1" test "$(tmux list-panes -t "=$TMUX_SESSION:agents" | wc -l | tr -d ' ')" -eq 5
+  check "the rest go in a second window"     test "$(tmux list-panes -t "=$TMUX_SESSION:agents 2" | wc -l | tr -d ' ')" -eq 2
+  check "stacked panes are the same height"  test "$(tmux list-panes -t "=$TMUX_SESSION:agents" -F '#{pane_left} #{pane_height}' | awk '$1 > 0 {print $2}' | sort -u | wc -l | tr -d ' ')" -le 2
   crew stop >/dev/null
 else
   echo "# tmux: skipped (tmux 3.0+ not installed)"

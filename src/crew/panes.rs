@@ -173,6 +173,7 @@ pub fn forget_other_mux_state(ctx: &Ctx) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crew::testutil::{fixture, Fixture, ROLES};
 
     #[test]
     fn a_column_built_top_down_comes_out_even() {
@@ -193,12 +194,6 @@ mod tests {
         assert_eq!(tab_label(0), "agents");
         assert_eq!(tab_label(1), "agents 2");
     }
-}
-
-#[cfg(test)]
-mod layout_tests {
-    use super::*;
-    use crate::crew::testutil::{fixture, Fixture, ROLES};
 
     const SHELL_AGENTS: &str = "[agents.claude]\ncommand = \"sh\"\n[agents.codex]\ncommand = \"sh\"\n";
 
