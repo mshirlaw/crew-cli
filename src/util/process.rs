@@ -148,7 +148,7 @@ mod tests {
     fn run_all_returns_the_error_when_the_program_is_missing() {
         let (ok, text) = run_all("crew-no-such-program", &["x"]);
         assert!(!ok);
-        assert!(!text.is_empty());
+        assert_ne!(text, "");
     }
 
     #[test]

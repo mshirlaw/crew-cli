@@ -231,7 +231,7 @@ mod tests {
         let seen = read_seen(&f.ctx, "builder").unwrap();
         assert_eq!(seen.fingerprint, util::fingerprint(SCREEN));
         assert!(!seen.notified);
-        assert!(f.calls().is_empty());
+        assert_eq!(f.calls(), Vec::<String>::new());
     }
 
     #[test]
@@ -244,7 +244,7 @@ mod tests {
         let seen = read_seen(&f.ctx, "builder").unwrap();
         assert_eq!(seen.fingerprint, util::fingerprint("something new"));
         assert!(util::now_secs() - seen.changed_at < 5);
-        assert!(f.calls().is_empty());
+        assert_eq!(f.calls(), Vec::<String>::new());
     }
 
     #[test]
@@ -270,7 +270,7 @@ mod tests {
         prime(&f, "builder", 5000, false);
         check_role(&f.ctx, "builder").unwrap();
         assert!(!notified(&f, "builder"));
-        assert!(f.calls().is_empty());
+        assert_eq!(f.calls(), Vec::<String>::new());
     }
 
     #[test]
@@ -280,7 +280,7 @@ mod tests {
         prime(&f, "builder", 100, false);
         check_role(&f.ctx, "builder").unwrap();
         assert!(!notified(&f, "builder"));
-        assert!(f.calls().is_empty());
+        assert_eq!(f.calls(), Vec::<String>::new());
     }
 
     #[test]

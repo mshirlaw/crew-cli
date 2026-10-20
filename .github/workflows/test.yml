@@ -42,8 +42,16 @@ jobs:
       - name: Formatting
         run: cargo fmt --check
 
+      # Each finding becomes an annotation on the run, so it's readable without the full log.
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          status=0
+          cargo clippy --all-targets --message-format=short -- -D warnings > clippy.out 2>&1 || status=$?
+          cat clippy.out
+          sed -nE 's/^([^ :]+):([0-9]+):([0-9]+): (error|warning): (.*)/::error file=\1,line=\2,col=\3::\5/p' clippy.out
+          exit "$status"
 
       - name: Unit tests
         run: cargo test
