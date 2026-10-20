@@ -13,11 +13,21 @@ fn exact(ctx: &Ctx) -> String {
     format!("={}", session(ctx))
 }
 pub fn major_version() -> Option<u32> {
-    let out = run_out("tmux", &["-V"])?;
+    parse_major_version(&run_out("tmux", &["-V"])?)
+}
+fn parse_major_version(out: &str) -> Option<u32> {
     out.chars().skip_while(|c| !c.is_ascii_digit()).take_while(char::is_ascii_digit).collect::<String>().parse().ok()
 }
-fn env_args(ctx: &Ctx, role: &str) -> Vec<String> {
-    vec!["-e".into(), format!("CREW_DIR={}", ctx.crew.display()), "-e".into(), format!("CREW_ROLE={role}")]
+fn env_args(crew: &Path, role: &str) -> Vec<String> {
+    vec!["-e".into(), format!("CREW_DIR={}", crew.display()), "-e".into(), format!("CREW_ROLE={role}")]
+}
+fn split_args(from: &str, direction: Direction, dir: &Path, crew: &Path, role: &str) -> Vec<String> {
+    let flag = if direction == Direction::Right { "-h" } else { "-v" };
+    let mut args = ["split-window", "-d", "-t", from, flag, "-c"].map(String::from).to_vec();
+    args.push(dir.display().to_string());
+    args.extend(env_args(crew, role));
+    args.extend(["-P".into(), "-F".into(), "#{pane_id}".into()]);
+    args
 }
 fn role_pane(ctx: &Ctx, role: &str) -> Option<String> {
     ctx.state.get(&format!("pane:{role}"))
@@ -74,7 +84,7 @@ impl Mux for Tmux {
             "-c".into(),
             ctx.role_dir(role).display().to_string(),
         ];
-        args.extend(env_args(ctx, role));
+        args.extend(env_args(&ctx.crew, role));
         args.extend(["-P".into(), "-F".into(), "#{pane_id}".into()]);
         let (success, out) = run_all("tmux", &args);
         if !success {
@@ -88,18 +98,7 @@ impl Mux for Tmux {
 
     // Sizes are left to finish_layout, which evens out every window at once.
     fn split(&self, ctx: &Ctx, role: &str, from: &str, direction: Direction, _keep: f32) -> Option<String> {
-        let flag = if direction == Direction::Right { "-h" } else { "-v" };
-        let mut args = vec![
-            "split-window".to_string(),
-            "-d".into(),
-            "-t".into(),
-            from.into(),
-            flag.into(),
-            "-c".into(),
-            ctx.role_dir(role).display().to_string(),
-        ];
-        args.extend(env_args(ctx, role));
-        args.extend(["-P".into(), "-F".into(), "#{pane_id}".into()]);
+        let args = split_args(from, direction, &ctx.role_dir(role), &ctx.crew, role);
         run_out("tmux", &args).map(|out| out.trim().to_string()).filter(|p| !p.is_empty())
     }
 
@@ -115,7 +114,7 @@ impl Mux for Tmux {
             dir.display().to_string(),
         ];
         if let Some(role) = role {
-            args.extend(env_args(ctx, role));
+            args.extend(env_args(&ctx.crew, role));
         }
         args.extend(["-P".into(), "-F".into(), "#{pane_id}".into()]);
         run_out("tmux", &args).map(|out| out.trim().to_string()).filter(|p| !p.is_empty())
@@ -209,5 +208,47 @@ impl Mux for Tmux {
         }
         let err = std::process::Command::new("tmux").args(["attach-session", "-t", &exact(ctx)]).exec();
         bail!("could not open tmux: {err}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn major_version_reads_the_leading_number() {
+        assert_eq!(parse_major_version("tmux 3.4\n"), Some(3));
+        assert_eq!(parse_major_version("tmux 2.9a"), Some(2));
+        assert_eq!(parse_major_version("tmux next-3.5"), Some(3));
+        assert_eq!(parse_major_version("tmux 10.0"), Some(10));
+    }
+
+    #[test]
+    fn major_version_is_none_without_digits() {
+        assert_eq!(parse_major_version("tmux master"), None);
+        assert_eq!(parse_major_version(""), None);
+    }
+
+    #[test]
+    fn env_args_pass_the_crew_dir_and_role() {
+        let expected: Vec<String> =
+            ["-e", "CREW_DIR=/r/.crew", "-e", "CREW_ROLE=human"].iter().map(|w| (*w).to_string()).collect();
+        assert_eq!(env_args(Path::new("/r/.crew"), "human"), expected);
+    }
+
+    #[test]
+    fn split_args_use_h_for_right_and_v_for_down() {
+        let right = split_args("%1", Direction::Right, Path::new("/w"), Path::new("/c"), "b");
+        let down = split_args("%1", Direction::Down, Path::new("/w"), Path::new("/c"), "b");
+        assert_eq!(right[..6], ["split-window", "-d", "-t", "%1", "-h", "-c"].map(String::from)[..]);
+        assert_eq!(down[4], "-v");
+    }
+
+    #[test]
+    fn split_args_set_the_cwd_env_and_print_the_new_pane_id() {
+        let args = split_args("%1", Direction::Down, Path::new("/w/b"), Path::new("/r/.crew"), "builder");
+        assert_eq!(args[6], "/w/b");
+        assert_eq!(args[7..11], ["-e", "CREW_DIR=/r/.crew", "-e", "CREW_ROLE=builder"].map(String::from)[..]);
+        assert_eq!(args[11..], ["-P", "-F", "#{pane_id}"].map(String::from)[..]);
     }
 }
