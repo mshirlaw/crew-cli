@@ -122,7 +122,10 @@ impl Mux for Tmux {
     }
 
     fn pane_exists(&self, pane: &str) -> bool {
-        !pane.is_empty() && run_ok("tmux", &["display-message", "-p", "-t", pane, "#{pane_id}"])
+        // tmux exits 0 for a pane that's gone, printing nothing, so the id has to come back.
+        !pane.is_empty()
+            && run_out("tmux", &["display-message", "-p", "-t", pane, "#{pane_id}"])
+                .is_some_and(|out| out.trim() == pane)
     }
 
     fn run(&self, pane: &str, command: &str) -> bool {

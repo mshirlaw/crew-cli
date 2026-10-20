@@ -7,10 +7,12 @@ Start a team of AI coding agents in any repo with one command. Each agent gets a
 ```
 ┌──────────────┬──────────────┐
 │              │   builder    │
-│     lead     │   (codex)    │
-│   (claude)   ├──────────────┤
-│              │   reviewer   │
+│              │   (codex)    │
+│     lead     ├──────────────┤
+│   (claude)   │   reviewer   │
 │              │   (gemini)   │
+│              ├──────────────┤
+│              │   terminal   │
 └──────────────┴──────────────┘
   tabs: agents | board
 ```

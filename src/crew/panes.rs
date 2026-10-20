@@ -1,4 +1,4 @@
-use super::context::Ctx;
+use super::context::{Ctx, HUMAN};
 use super::{agents, board};
 use crate::mux::Direction;
 use crate::util::ui;
@@ -29,8 +29,13 @@ pub fn build(ctx: &Ctx) -> Result<()> {
 }
 
 // The tab's first role fills the left half; the others share the right half evenly.
+// The first tab ends with a plain terminal for the human, last in the right column.
 fn lay_out_tab(ctx: &Ctx, index: usize, group: &[String]) {
-    let Some((main_role, stacked)) = group.split_first() else { return };
+    let Some((main_role, agents)) = group.split_first() else { return };
+    let mut stacked: Vec<&str> = agents.iter().map(String::as_str).collect();
+    if index == 0 {
+        stacked.push(HUMAN);
+    }
     let main = if index == 0 {
         ctx.state.get(&format!("pane:{main_role}"))
     } else {
@@ -40,7 +45,7 @@ fn lay_out_tab(ctx: &Ctx, index: usize, group: &[String]) {
         ui::warn(format!("could not create a pane for {main_role}"));
         return;
     };
-    ctx.state.set(&format!("pane:{main_role}"), &main);
+    ctx.state.set(&pane_key(main_role), &main);
     let mut above: Option<String> = None;
     for (i, role) in stacked.iter().enumerate() {
         let pane = match &above {
@@ -48,7 +53,7 @@ fn lay_out_tab(ctx: &Ctx, index: usize, group: &[String]) {
             Some(pane) => ctx.mux.split(ctx, role, pane, Direction::Down, even_share(stacked.len() - i + 1)),
         };
         if let Some(pane) = pane {
-            ctx.state.set(&format!("pane:{role}"), &pane);
+            ctx.state.set(&pane_key(role), &pane);
             above = Some(pane);
         }
     }
@@ -59,6 +64,15 @@ fn lay_out_tab(ctx: &Ctx, index: usize, group: &[String]) {
 #[allow(clippy::cast_precision_loss)] // pane counts are tiny
 fn even_share(panes: usize) -> f32 {
     1.0 / panes as f32
+}
+
+// The terminal isn't a role, so it stays out of the `pane:<role>` keys that status and the watcher read.
+fn pane_key(name: &str) -> String {
+    if name == HUMAN {
+        "terminal".to_string()
+    } else {
+        format!("pane:{name}")
+    }
 }
 
 fn tab_label(index: usize) -> String {
@@ -80,7 +94,18 @@ pub fn revive(ctx: &Ctx) {
             agents::launch(ctx, &role, &pane, true);
         }
     }
+    revive_terminal(ctx);
     ctx.mux.finish_layout(ctx);
+}
+
+fn revive_terminal(ctx: &Ctx) {
+    if ctx.state.get("terminal").is_some_and(|pane| ctx.mux.pane_exists(&pane)) {
+        return;
+    }
+    let Some(anchor) = any_live(ctx) else { return };
+    if let Some(pane) = ctx.mux.split(ctx, HUMAN, &anchor, Direction::Down, 0.5) {
+        ctx.state.set("terminal", &pane);
+    }
 }
 
 fn pane_for(ctx: &Ctx, role: &str) -> Option<String> {

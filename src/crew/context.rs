@@ -5,6 +5,9 @@ use crate::util;
 use anyhow::{anyhow, bail, Result};
 use std::path::{Path, PathBuf};
 
+// The plain terminal pane's name, and the sender `crew say` uses outside an agent pane.
+pub const HUMAN: &str = "human";
+
 pub struct Ctx {
     pub root: PathBuf,
     pub crew: PathBuf,
@@ -59,7 +62,7 @@ impl Ctx {
     }
 
     pub fn role_dir(&self, role: &str) -> PathBuf {
-        if self.config.role_has_worktree(role) {
+        if role != HUMAN && self.config.role_has_worktree(role) {
             self.worktree_base().join(role)
         } else {
             self.root.clone()
