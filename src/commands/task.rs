@@ -104,7 +104,7 @@ mod tests {
     fn add_rejects_a_blank_title() {
         let ctx = crew_ctx();
         assert!(error(add(&ctx, &words("  "), None, None)).starts_with("usage:"));
-        assert!(tasks::load(&ctx).is_empty());
+        assert_eq!(tasks::load(&ctx), Vec::<tasks::Task>::new());
     }
 
     #[test]

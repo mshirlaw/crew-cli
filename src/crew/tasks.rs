@@ -238,7 +238,7 @@ mod tests {
         add(&f.ctx, "reviewer", "theirs", "").unwrap();
         assert_eq!(open_for(&f.ctx, "builder"), [1, 2]);
         assert_eq!(open_for(&f.ctx, "reviewer"), [6]);
-        assert!(open_for(&f.ctx, "lead").is_empty());
+        assert_eq!(open_for(&f.ctx, "lead"), Vec::<u32>::new());
     }
 
     #[test]

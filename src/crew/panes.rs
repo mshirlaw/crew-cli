@@ -211,7 +211,7 @@ mod tests {
     fn build_needs_at_least_one_role() {
         let f = fixture("");
         assert!(build(&f.ctx).is_err());
-        assert!(f.calls().is_empty());
+        assert_eq!(f.calls(), Vec::<String>::new());
     }
 
     #[test]
@@ -358,7 +358,7 @@ mod tests {
         let f = crew("");
         f.ctx.state.set("pane:builder", "p-gone");
         close(&f.ctx, "builder");
-        assert!(f.calls().is_empty());
+        assert_eq!(f.calls(), Vec::<String>::new());
         assert_eq!(f.ctx.state.get("pane:builder"), None);
         close(&f.ctx, "reviewer");
     }

@@ -383,7 +383,7 @@ mod tests {
         assert!((c.paste_delay() - 0.3).abs() < f64::EPSILON);
         assert_eq!(c.base_branch(), None);
         assert_eq!(c.worktree_dir_text(), "~/.crew/worktrees");
-        assert!(c.roles().is_empty());
+        assert_eq!(c.roles(), Vec::<String>::new());
     }
 
     #[test]

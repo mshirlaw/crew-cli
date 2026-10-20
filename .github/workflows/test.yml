@@ -44,13 +44,13 @@ jobs:
 
       # Each finding becomes an annotation on the run, so it's readable without the full log.
       - name: Clippy
+        env:
+          CARGO_TERM_COLOR: never
         run: |
-          echo "::notice::$(rustc --version)"
           status=0
           cargo clippy --all-targets --message-format=short -- -D warnings > clippy.out 2>&1 || status=$?
           cat clippy.out
           sed -nE 's/^([^ :]+):([0-9]+):([0-9]+): (error|warning): (.*)/::error file=\1,line=\2,col=\3::\5/p' clippy.out
-          tail -n 25 clippy.out | sed "s/^/::warning::/"
           exit "$status"
 
       - name: Unit tests

@@ -431,7 +431,7 @@ mod tests {
         let fake = Fake::new();
         tmux(&fake, "echo %1");
         assert!(!Tmux.pane_exists(""));
-        assert!(fake.log("tmux").is_empty());
+        assert_eq!(fake.log("tmux"), Vec::<String>::new());
         assert!(Tmux.pane_exists("%1"));
         assert_eq!(fake.log("tmux"), ["display-message -p -t %1 #{pane_id}"]);
         assert!(!Tmux.pane_exists("%2"), "a different id back means another pane");
@@ -592,7 +592,7 @@ mod tests {
         let fake = Fake::new();
         tmux(&fake, "echo @5");
         Tmux.finish_layout(&ctx);
-        assert!(fake.log("tmux").is_empty());
+        assert_eq!(fake.log("tmux"), Vec::<String>::new());
     }
 
     #[test]

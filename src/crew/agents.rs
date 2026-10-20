@@ -116,7 +116,7 @@ mod tests {
         let toml = "[roles.builder]\nagent = \"ghost\"\n[agents.ghost]\ncommand = \"crew-no-such-program-xyz\"\n";
         let f = fixture(toml);
         assert!(!launch(&f.ctx, "builder", "p1", false));
-        assert!(f.calls().is_empty());
+        assert_eq!(f.calls(), Vec::<String>::new());
     }
 
     #[test]

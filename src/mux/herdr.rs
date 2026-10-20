@@ -387,7 +387,7 @@ mod tests {
         let fake = Fake::new();
         herdr(&fake, "exit 0");
         assert!(!Herdr.workspace_exists(&ctx));
-        assert!(fake.log("herdr").is_empty());
+        assert_eq!(fake.log("herdr"), Vec::<String>::new());
         ctx.state.set("ws", "w9");
         assert!(Herdr.workspace_exists(&ctx));
         assert_eq!(fake.log("herdr"), ["workspace get w9"]);
@@ -478,7 +478,7 @@ mod tests {
         let fake = Fake::new();
         herdr(&fake, "echo '{\"result\":{\"root_pane\":{\"pane_id\":\"w1:b1\"}}}'");
         assert_eq!(Herdr.new_tab(&ctx, "board", Path::new("/work"), None), None);
-        assert!(fake.log("herdr").is_empty());
+        assert_eq!(fake.log("herdr"), Vec::<String>::new());
     }
 
     #[test]
@@ -500,7 +500,7 @@ mod tests {
         let fake = Fake::new();
         herdr(&fake, "exit 0");
         assert!(!Herdr.pane_exists(""));
-        assert!(fake.log("herdr").is_empty());
+        assert_eq!(fake.log("herdr"), Vec::<String>::new());
         assert!(Herdr.pane_exists("w1:p1"));
         assert_eq!(fake.log("herdr"), ["pane get w1:p1"]);
         herdr(&fake, "exit 1");
@@ -625,7 +625,7 @@ mod tests {
         let fake = Fake::new();
         herdr(&fake, "exit 0");
         Herdr.finish_layout(&ctx);
-        assert!(fake.log("herdr").is_empty());
+        assert_eq!(fake.log("herdr"), Vec::<String>::new());
     }
 
     #[test]
