@@ -46,3 +46,14 @@ pub fn make(kind: MuxKind) -> Box<dyn Mux> {
         MuxKind::Tmux => Box::new(tmux::Tmux),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_kind_makes_its_own_multiplexer() {
+        assert_eq!(make(MuxKind::Herdr).name(), "herdr");
+        assert_eq!(make(MuxKind::Tmux).name(), "tmux");
+    }
+}

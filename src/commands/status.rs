@@ -65,3 +65,45 @@ fn agents_to_check(ctx: Option<&Ctx>) -> Vec<String> {
     agents.dedup();
     agents
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::testing::{crew_ctx, ctx_in, scratch_dir};
+
+    #[test]
+    fn status_lists_roles_even_when_nothing_is_running() {
+        status(&crew_ctx()).unwrap();
+    }
+
+    #[test]
+    fn status_needs_a_crew() {
+        let ctx = ctx_in(&scratch_dir(), None);
+        assert!(status(&ctx).unwrap_err().to_string().contains("crew setup"));
+    }
+
+    #[test]
+    fn outside_a_crew_the_usual_agents_are_checked() {
+        let ctx = ctx_in(&scratch_dir(), None);
+        assert_eq!(agents_to_check(Some(&ctx)), ["claude", "codex", "gemini"]);
+        assert_eq!(agents_to_check(None), ["claude", "codex", "gemini"]);
+    }
+
+    #[test]
+    fn inside_a_crew_the_programs_its_roles_run_are_checked_once_each() {
+        let ctx = ctx_in(
+            &scratch_dir(),
+            Some(
+                "[roles.a]\nagent = \"codex\"\n[roles.b]\nagent = \"codex\"\n[roles.c]\nagent = \"aider\"\n\
+                 [agents.aider]\ncommand = \"aider --yes\"\n",
+            ),
+        );
+        assert_eq!(agents_to_check(Some(&ctx)), ["aider", "codex"]);
+    }
+
+    #[test]
+    fn required_returns_whether_the_check_passed() {
+        assert!(required(true, "fine", "bad"));
+        assert!(!required(false, "fine", "bad"));
+    }
+}

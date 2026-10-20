@@ -37,9 +37,29 @@ mod tests {
     }
 
     #[test]
+    fn durations_switch_to_minutes_at_sixty_seconds() {
+        assert_eq!(duration(0), "0s");
+        assert_eq!(duration(59), "59s");
+        assert_eq!(duration(60), "1 min");
+        assert_eq!(duration(119), "1 min");
+    }
+
+    #[test]
+    fn the_clock_is_after_2020() {
+        assert!(now_secs() > 1_577_836_800);
+    }
+
+    #[test]
+    fn shell_join_of_nothing_is_empty() {
+        assert_eq!(shell_join(&[]), "");
+    }
+
+    #[test]
     fn fingerprints_are_stable() {
         assert_eq!(fingerprint(""), "811c9dc5");
+        assert_eq!(fingerprint("a"), "e40c292c");
         assert_ne!(fingerprint("a"), fingerprint("b"));
+        assert_eq!(fingerprint("any text").len(), 8);
     }
 
     #[test]
