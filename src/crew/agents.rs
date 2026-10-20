@@ -54,72 +54,78 @@ pub fn launch(ctx: &Ctx, role: &str, pane: &str, revive: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crew::config::Config;
-    use crate::crew::state::State;
-    use crate::mux;
-    use std::path::PathBuf;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use crate::crew::testutil::{fixture, ROLES};
 
-    static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
-
-    fn context(config_text: &str) -> (Ctx, PathBuf) {
-        let id = NEXT_DIR.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("crew-agents-test-{}-{id}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
-        let config_path = dir.join("config.toml");
-        std::fs::write(&config_path, config_text).unwrap();
-        let config = Config::load(Some(config_path)).unwrap();
-        let crew = dir.join(".crew");
-        let ctx = Ctx {
-            root: dir.clone(),
-            crew: crew.clone(),
-            slug: "repo".to_string(),
-            key: "repo-test".to_string(),
-            config,
-            state: State::new(crew.join("state")),
-            mux: mux::make(crate::crew::config::MuxKind::Tmux),
-        };
-        (ctx, dir)
+    #[test]
+    fn kickoff_names_the_role_and_files() {
+        let f = fixture(ROLES);
+        let prompt = kickoff_prompt(&f.ctx, "builder", false);
+        let crew = f.ctx.crew.display();
+        assert!(prompt.starts_with("You are the builder agent"));
+        assert!(prompt.contains(&format!("{crew}/roles/builder.md")));
+        assert!(!prompt.contains("restarted"));
+        assert!(!prompt.contains("greet"));
     }
 
     #[test]
-    fn kickoff_prompt_includes_handoff_only_when_restarting() {
-        let (ctx, dir) = context("[roles.builder]\nagent = \"codex\"\n");
-        let fresh = kickoff_prompt(&ctx, "builder", false);
-        let revived = kickoff_prompt(&ctx, "builder", true);
-        assert!(!fresh.contains("notes/builder.md"));
-        assert!(revived.contains("notes/builder.md"));
-        let _ = std::fs::remove_dir_all(dir);
+    fn restarted_agents_are_pointed_at_their_handoff() {
+        let f = fixture(ROLES);
+        let prompt = kickoff_prompt(&f.ctx, "builder", true);
+        assert!(prompt.contains(&format!("{}/notes/builder.md", f.ctx.crew.display())));
     }
 
     #[test]
-    fn lead_prompt_asks_for_the_human_goal() {
-        let (ctx, dir) = context("[roles.lead]\nagent = \"codex\"\n");
-        assert!(kickoff_prompt(&ctx, "lead", false).contains("ask what the crew should work on"));
-        assert!(!kickoff_prompt(&ctx, "lead", true).contains("ask what the crew should work on"));
-        let _ = std::fs::remove_dir_all(dir);
+    fn only_a_fresh_lead_greets_the_human() {
+        let f = fixture(ROLES);
+        assert!(kickoff_prompt(&f.ctx, "lead", false).contains("greet the human"));
+        assert!(!kickoff_prompt(&f.ctx, "lead", true).contains("greet the human"));
     }
 
     #[test]
-    fn claude_gets_a_prompt_delimiter() {
-        let (ctx, dir) =
-            context("[roles.builder]\nagent = \"claude\"\n[agents.claude]\ncommand = \"claude --add-dir {crew}\"\n");
-        let words = agent_words(&ctx, "builder", false);
-        assert_eq!(words[0], "claude");
-        assert_eq!(words[1], "--add-dir");
+    fn claude_gets_a_separator_before_the_prompt() {
+        let f = fixture(ROLES);
+        let words = agent_words(&f.ctx, "builder", false);
+        assert_eq!(&words[..3], ["claude", "--add-dir", f.ctx.crew.to_str().unwrap()]);
         assert_eq!(words[3], "--");
-        assert!(words[4].starts_with("You are the builder agent"));
-        let _ = std::fs::remove_dir_all(dir);
+        assert_eq!(words.iter().filter(|w| *w == "--").count(), 1);
+        assert_eq!(words.last().unwrap(), &kickoff_prompt(&f.ctx, "builder", false));
     }
 
     #[test]
-    fn explicit_prompt_placeholder_is_not_duplicated() {
-        let (ctx, dir) = context(
-            "[roles.builder]\nagent = \"custom\"\n[agents.custom]\ncommand = [\"custom\", \"--prompt\", \"{prompt}\"]\n",
-        );
-        let words = agent_words(&ctx, "builder", false);
-        assert_eq!(words.len(), 3);
-        assert!(words[2].contains("You are the builder agent"));
-        let _ = std::fs::remove_dir_all(dir);
+    fn other_agents_get_the_prompt_last_without_a_separator() {
+        let f = fixture(ROLES);
+        let words = agent_words(&f.ctx, "reviewer", false);
+        assert_eq!(words[0], "codex");
+        assert!(!words.contains(&"--".to_string()));
+        assert_eq!(words.last().unwrap(), &kickoff_prompt(&f.ctx, "reviewer", false));
+    }
+
+    #[test]
+    fn placeholders_are_filled_per_word() {
+        let toml = "[roles.builder]\nagent = \"tool\"\n[agents.tool]\ncommand = [\"tool\", \"--as={role}\", \"{repo}\", \"-p\", \"{prompt}\"]\n";
+        let f = fixture(toml);
+        let words = agent_words(&f.ctx, "builder", false);
+        assert_eq!(words.len(), 5);
+        assert_eq!(words[1], "--as=builder");
+        assert_eq!(words[2], f.ctx.root.display().to_string());
+        assert_eq!(words[4], kickoff_prompt(&f.ctx, "builder", false));
+    }
+
+    #[test]
+    fn launch_leaves_the_pane_alone_when_the_program_is_missing() {
+        let toml = "[roles.builder]\nagent = \"ghost\"\n[agents.ghost]\ncommand = \"crew-no-such-program-xyz\"\n";
+        let f = fixture(toml);
+        assert!(!launch(&f.ctx, "builder", "p1", false));
+        assert!(f.calls().is_empty());
+    }
+
+    #[test]
+    fn launch_starts_an_installed_program_in_the_pane() {
+        let toml = "[roles.builder]\nagent = \"shell\"\n[agents.shell]\ncommand = \"sh -c\"\n";
+        let f = fixture(toml);
+        assert!(launch(&f.ctx, "builder", "p1", false));
+        let calls = f.calls();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].starts_with("start_agent builder p1 sh -c You are the builder agent"));
     }
 }

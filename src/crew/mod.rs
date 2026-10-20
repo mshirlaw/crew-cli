@@ -7,5 +7,7 @@ pub mod protocol;
 pub mod state;
 pub mod tasks;
 pub mod templates;
+#[cfg(test)]
+pub mod testutil;
 pub mod watcher;
 pub mod worktree;

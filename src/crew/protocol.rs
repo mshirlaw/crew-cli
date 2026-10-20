@@ -32,3 +32,42 @@ pub fn write(ctx: &Ctx) -> Result<()> {
     std::fs::write(ctx.file("PROTOCOL.md"), text)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::crew::testutil::{fixture, ROLES};
+
+    #[test]
+    fn lists_every_role_with_branch_and_directory() {
+        let f = fixture(ROLES);
+        write(&f.ctx).unwrap();
+        let text = std::fs::read_to_string(f.ctx.file("PROTOCOL.md")).unwrap();
+        assert!(text.contains("Base branch: `main`"));
+        assert!(text.contains(&format!("| lead | claude | main (main checkout) | {} |", f.ctx.root.display())));
+        let builder_dir = f.ctx.role_dir("builder");
+        assert!(text.contains(&format!("| builder | claude | crew/builder | {} |", builder_dir.display())));
+        assert!(text.contains("| reviewer | codex | crew/reviewer |"));
+    }
+
+    #[test]
+    fn ends_with_the_rules_and_uses_the_configured_base_branch() {
+        let f = fixture(&format!("base_branch = \"develop\"\n{ROLES}"));
+        write(&f.ctx).unwrap();
+        let text = std::fs::read_to_string(f.ctx.file("PROTOCOL.md")).unwrap();
+        assert!(text.contains("Base branch: `develop`"));
+        assert!(text.contains("develop (main checkout)"));
+        assert!(text.ends_with(templates::PROTOCOL_RULES));
+    }
+
+    #[test]
+    fn is_regenerated_when_roles_change() {
+        let mut f = fixture(ROLES);
+        write(&f.ctx).unwrap();
+        f.ctx.config = crate::crew::config::Config::from_toml("", "[roles.solo]\nagent = \"gemini\"\n");
+        write(&f.ctx).unwrap();
+        let text = std::fs::read_to_string(f.ctx.file("PROTOCOL.md")).unwrap();
+        assert!(text.contains("| solo | gemini |"));
+        assert!(!text.contains("| lead |"));
+    }
+}
