@@ -1,15 +1,25 @@
 use anyhow::{Context, Result};
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+#[cfg(test)]
+use super::testing::resolve;
+
+#[cfg(not(test))]
+fn resolve(program: &str) -> OsString {
+    OsString::from(program)
+}
+
 pub fn has(program: &str) -> bool {
+    let program = resolve(program);
+    let program = program.to_string_lossy();
     if program.contains('/') {
-        return is_executable(Path::new(program));
+        return is_executable(Path::new(&*program));
     }
     std::env::var_os("PATH")
-        .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| is_executable(&dir.join(program))))
+        .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| is_executable(&dir.join(&*program))))
 }
 
 fn is_executable(path: &Path) -> bool {
@@ -17,7 +27,7 @@ fn is_executable(path: &Path) -> bool {
 }
 
 pub fn run_ok<S: AsRef<OsStr>>(program: &str, args: &[S]) -> bool {
-    Command::new(program)
+    Command::new(resolve(program))
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -27,12 +37,12 @@ pub fn run_ok<S: AsRef<OsStr>>(program: &str, args: &[S]) -> bool {
 }
 
 pub fn run_out<S: AsRef<OsStr>>(program: &str, args: &[S]) -> Option<String> {
-    let out = Command::new(program).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+    let out = Command::new(resolve(program)).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 pub fn run_all<S: AsRef<OsStr>>(program: &str, args: &[S]) -> (bool, String) {
-    match Command::new(program).args(args).stdin(Stdio::null()).output() {
+    match Command::new(resolve(program)).args(args).stdin(Stdio::null()).output() {
         Ok(out) => {
             let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
             text.push_str(&String::from_utf8_lossy(&out.stderr));
@@ -52,7 +62,7 @@ pub fn spawn_detached<S: AsRef<OsStr>>(
     use std::os::unix::process::CommandExt;
     let log_file = std::fs::File::create(log).with_context(|| format!("could not create {}", log.display()))?;
     let child = Command::new("nohup")
-        .arg(program)
+        .arg(resolve(&program.to_string_lossy()))
         .args(args)
         .envs(envs.iter().map(|(k, v)| (k, v)))
         .stdin(Stdio::null())

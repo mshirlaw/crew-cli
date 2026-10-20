@@ -1,5 +1,7 @@
 mod files;
 mod process;
+#[cfg(test)]
+pub mod testing;
 mod text;
 pub mod ui;
 
