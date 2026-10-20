@@ -17,12 +17,13 @@ pub struct Ctx {
 impl Ctx {
     // CREW_DIR is set in every agent pane, so `crew` finds the shared folder from any worktree.
     pub fn load() -> Result<Ctx> {
-        let (root, crew) = if let Some(crew) = std::env::var_os("CREW_DIR").map(PathBuf::from).filter(|d| d.is_dir()) {
-            (crew.parent().map(Path::to_path_buf).unwrap_or_default(), crew)
-        } else {
-            let root = repo_root().ok_or_else(|| anyhow!("not inside a git repository"))?;
-            let crew = root.join(".crew");
-            (root, crew)
+        let discovered_root = repo_root();
+        let env_crew = std::env::var_os("CREW_DIR").map(PathBuf::from).filter(|d| d.is_dir());
+        let (root, crew) = match (discovered_root, env_crew) {
+            (Some(root), Some(crew)) if crew.parent().is_some_and(|parent| parent == root) => (root, crew),
+            (Some(root), _) => (root.clone(), root.join(".crew")),
+            (None, Some(crew)) => (crew.parent().map(Path::to_path_buf).unwrap_or_default(), crew),
+            (None, None) => return Err(anyhow!("not inside a git repository")),
         };
         let config = Config::load(Some(crew.join("config.toml")))?;
         let mux = mux::make(config.multiplexer()?);

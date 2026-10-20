@@ -34,6 +34,9 @@ pub fn agent_words(ctx: &Ctx, role: &str, revive: bool) -> Vec<String> {
         })
         .collect();
     if !uses_prompt {
+        if ctx.config.role_agent(role) == "claude" && !words.iter().any(|word| word == "--") {
+            words.push("--".to_string());
+        }
         words.push(prompt);
     }
     words

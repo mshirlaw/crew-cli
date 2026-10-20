@@ -296,7 +296,7 @@ fn roles_only(doc: &DocumentMut) -> String {
 
 fn default_command(agent: &str) -> Vec<String> {
     let text = match agent {
-        "claude" => "claude --add-dir {crew}",
+        "claude" => "claude --add-dir {crew} --",
         // In a folder it doesn't trust yet, Codex defaults to read-only and then refuses --add-dir.
         "codex" => "codex --sandbox workspace-write --add-dir {crew}",
         "gemini" => "gemini --include-directories {crew} -i",
@@ -346,7 +346,7 @@ mod tests {
             config("[agents.a]\ncommand = \"a --dir '{crew}' -x\"\n[agents.b]\ncommand = [\"b\", \"two words\"]\n", "");
         assert_eq!(c.agent_command("a"), vec!["a", "--dir", "{crew}", "-x"]);
         assert_eq!(c.agent_command("b"), vec!["b", "two words"]);
-        assert_eq!(c.agent_command("claude"), vec!["claude", "--add-dir", "{crew}"]);
+        assert_eq!(c.agent_command("claude"), vec!["claude", "--add-dir", "{crew}", "--"]);
         assert_eq!(c.agent_command("codex")[1..3], ["--sandbox", "workspace-write"]);
     }
 

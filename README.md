@@ -56,7 +56,7 @@ crew teardown                            stop and remove clean worktrees
 multiplexer = "tmux"                  # or "herdr"
 
 [agents.claude]
-command = "claude --add-dir {crew}"   # how to launch an agent
+command = "claude --add-dir {crew} --"   # how to launch an agent
 
 [roles.reviewer]
 agent = "claude"

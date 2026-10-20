@@ -115,7 +115,7 @@ paste_delay = 0.2
 stall_timeout = 0
 
 [agents.claude]
-command = "$WORK/bin/claude --add-dir {crew}"
+command = "$WORK/bin/claude --add-dir {crew} --"
 
 [agents.codex]
 command = "$WORK/bin/codex --add-dir {crew}"

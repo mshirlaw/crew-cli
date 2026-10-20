@@ -35,7 +35,7 @@ watch_interval = 30
 # type your exact command instead, e.g. for a wrapper script or a custom CLI.
 
 [agents.claude]
-command = "claude --add-dir {crew}"
+command = "claude --add-dir {crew} --"
 
 [agents.codex]
 command = "codex --sandbox workspace-write --add-dir {crew}"   # read-only would refuse --add-dir
