@@ -7,7 +7,7 @@ use std::path::Path;
 
 pub struct Tmux;
 fn session(ctx: &Ctx) -> String {
-    format!("crew-{}", ctx.slug)
+    format!("crew-{}", ctx.key)
 }
 fn exact(ctx: &Ctx) -> String {
     format!("={}", session(ctx))

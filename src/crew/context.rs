@@ -12,6 +12,7 @@ pub struct Ctx {
     pub root: PathBuf,
     pub crew: PathBuf,
     pub slug: String,
+    pub key: String,
     pub config: Config,
     pub state: State,
     pub mux: Box<dyn Mux>,
@@ -24,14 +25,21 @@ impl Ctx {
         let env_crew = std::env::var_os("CREW_DIR").map(PathBuf::from).filter(|d| d.is_dir());
         let (root, crew) = match (discovered_root, env_crew) {
             (Some(root), Some(crew)) if crew.parent().is_some_and(|parent| parent == root) => (root, crew),
-            (Some(root), _) => (root.clone(), root.join(".crew")),
+            (Some(_), Some(crew)) => {
+                return Err(anyhow!(
+                    "CREW_DIR points to {}, which is not part of the current repository",
+                    crew.display()
+                ));
+            }
+            (Some(root), None) => (root.clone(), root.join(".crew")),
             (None, Some(crew)) => (crew.parent().map(Path::to_path_buf).unwrap_or_default(), crew),
             (None, None) => return Err(anyhow!("not inside a git repository")),
         };
         let config = Config::load(Some(crew.join("config.toml")))?;
         let mux = mux::make(config.multiplexer()?);
         let slug = slugify(&root.file_name().unwrap_or_default().to_string_lossy());
-        Ok(Ctx { state: State::new(crew.join("state")), root, crew, slug, config, mux })
+        let key = crew_key(&crew, &slug);
+        Ok(Ctx { state: State::new(crew.join("state")), root, crew, slug, key, config, mux })
     }
 
     pub fn reload(&mut self) -> Result<()> {
@@ -70,7 +78,7 @@ impl Ctx {
     }
 
     pub fn agent_name(&self, role: &str) -> String {
-        format!("{}-{role}", self.slug)
+        format!("{}-{role}", self.key)
     }
 
     pub fn base_branch(&self) -> String {
@@ -100,9 +108,14 @@ pub fn slugify(name: &str) -> String {
     prefixed.chars().take(16).collect::<String>().trim_end_matches('-').to_string()
 }
 
+fn crew_key(root: &Path, slug: &str) -> String {
+    format!("{slug}-{}", &util::fingerprint(&root.to_string_lossy())[..6])
+}
+
 #[cfg(test)]
 mod tests {
-    use super::slugify;
+    use super::{crew_key, slugify};
+    use std::path::Path;
 
     #[test]
     fn slugs_are_short_and_safe() {
@@ -110,5 +123,10 @@ mod tests {
         assert_eq!(slugify("2048-game"), "r2048-game");
         assert_eq!(slugify("a-really-long-repository-name"), "a-really-long-re");
         assert_eq!(slugify("--x--"), "x");
+    }
+
+    #[test]
+    fn keys_distinguish_crew_directories() {
+        assert_ne!(crew_key(Path::new("/repo/.crew-a"), "api"), crew_key(Path::new("/repo/.crew-b"), "api"));
     }
 }

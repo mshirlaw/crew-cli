@@ -75,6 +75,9 @@ These were settled while building crew. Don't reverse one without a good reason,
 - **Settings must sit above any `[section]`** to be top-level. That's TOML, and the docs and generated files say so.
 - **`crew config init` creates the global config** from `config.example.toml`, choosing herdr if it's installed, otherwise tmux. It never overwrites an existing config; the installer runs it.
 
+### Crew identity
+- Every crew directory has a stable key made from its readable repository slug plus a hash of the crew directory path. Herdr agent names, herdr workspace labels, and tmux session names use this key, so two crews with the same repository name—or two crew directories in one repository—cannot address each other's sessions.
+
 ### Multiplexers
 - **herdr and tmux implement one `Mux` trait.** Adding a multiplexer means implementing it and adding a `MuxKind`.
 - **herdr is driven through its CLI,** whose command shapes are tested against a fake. Its JSON is parsed with serde_json (no jq). Talking to herdr's socket API directly is a possible future improvement.

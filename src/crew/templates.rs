@@ -41,3 +41,24 @@ pub fn default_roles(lead: &str, builder: &str, reviewer: &str) -> String {
          \n[roles.reviewer]\nagent = \"{reviewer}\"\nworktree = true\n"
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_roles_preserve_role_agents_and_worktree_policy() {
+        let text = default_roles("claude", "codex", "gemini");
+        assert!(text.contains("[roles.lead]"));
+        assert!(text.contains("agent = \"claude\"\nworktree = false"));
+        assert!(text.contains("[roles.builder]\nagent = \"codex\"\nworktree = true"));
+        assert!(text.contains("[roles.reviewer]\nagent = \"gemini\"\nworktree = true"));
+    }
+
+    #[test]
+    fn unknown_role_template_explains_what_to_edit() {
+        let text = role_template("qa");
+        assert!(text.contains("# Role: qa"));
+        assert!(text.contains("crew role edit qa"));
+    }
+}
