@@ -7,25 +7,27 @@ use std::path::Path;
 
 pub struct Tmux;
 fn session(ctx: &Ctx) -> String {
-    format!("crew-{}", ctx.slug)
+    format!("crew-{}", ctx.key)
 }
 fn exact(ctx: &Ctx) -> String {
     format!("={}", session(ctx))
 }
 pub fn major_version() -> Option<u32> {
-    parse_major(&run_out("tmux", &["-V"])?)
+    parse_major_version(&run_out("tmux", &["-V"])?)
 }
-fn parse_major(version_output: &str) -> Option<u32> {
-    version_output
-        .chars()
-        .skip_while(|c| !c.is_ascii_digit())
-        .take_while(char::is_ascii_digit)
-        .collect::<String>()
-        .parse()
-        .ok()
+fn parse_major_version(out: &str) -> Option<u32> {
+    out.chars().skip_while(|c| !c.is_ascii_digit()).take_while(char::is_ascii_digit).collect::<String>().parse().ok()
 }
-fn env_args(ctx: &Ctx, role: &str) -> Vec<String> {
-    vec!["-e".into(), format!("CREW_DIR={}", ctx.crew.display()), "-e".into(), format!("CREW_ROLE={role}")]
+fn env_args(crew: &Path, role: &str) -> Vec<String> {
+    vec!["-e".into(), format!("CREW_DIR={}", crew.display()), "-e".into(), format!("CREW_ROLE={role}")]
+}
+fn split_args(from: &str, direction: Direction, dir: &Path, crew: &Path, role: &str) -> Vec<String> {
+    let flag = if direction == Direction::Right { "-h" } else { "-v" };
+    let mut args = ["split-window", "-d", "-t", from, flag, "-c"].map(String::from).to_vec();
+    args.push(dir.display().to_string());
+    args.extend(env_args(crew, role));
+    args.extend(["-P".into(), "-F".into(), "#{pane_id}".into()]);
+    args
 }
 fn role_pane(ctx: &Ctx, role: &str) -> Option<String> {
     ctx.state.get(&format!("pane:{role}"))
@@ -82,7 +84,7 @@ impl Mux for Tmux {
             "-c".into(),
             ctx.role_dir(role).display().to_string(),
         ];
-        args.extend(env_args(ctx, role));
+        args.extend(env_args(&ctx.crew, role));
         args.extend(["-P".into(), "-F".into(), "#{pane_id}".into()]);
         let (success, out) = run_all("tmux", &args);
         if !success {
@@ -96,18 +98,7 @@ impl Mux for Tmux {
 
     // Sizes are left to finish_layout, which evens out every window at once.
     fn split(&self, ctx: &Ctx, role: &str, from: &str, direction: Direction, _keep: f32) -> Option<String> {
-        let flag = if direction == Direction::Right { "-h" } else { "-v" };
-        let mut args = vec![
-            "split-window".to_string(),
-            "-d".into(),
-            "-t".into(),
-            from.into(),
-            flag.into(),
-            "-c".into(),
-            ctx.role_dir(role).display().to_string(),
-        ];
-        args.extend(env_args(ctx, role));
-        args.extend(["-P".into(), "-F".into(), "#{pane_id}".into()]);
+        let args = split_args(from, direction, &ctx.role_dir(role), &ctx.crew, role);
         run_out("tmux", &args).map(|out| out.trim().to_string()).filter(|p| !p.is_empty())
     }
 
@@ -123,14 +114,17 @@ impl Mux for Tmux {
             dir.display().to_string(),
         ];
         if let Some(role) = role {
-            args.extend(env_args(ctx, role));
+            args.extend(env_args(&ctx.crew, role));
         }
         args.extend(["-P".into(), "-F".into(), "#{pane_id}".into()]);
         run_out("tmux", &args).map(|out| out.trim().to_string()).filter(|p| !p.is_empty())
     }
 
     fn pane_exists(&self, pane: &str) -> bool {
-        !pane.is_empty() && run_ok("tmux", &["display-message", "-p", "-t", pane, "#{pane_id}"])
+        // tmux exits 0 for a pane that's gone, printing nothing, so the id has to come back.
+        !pane.is_empty()
+            && run_out("tmux", &["display-message", "-p", "-t", pane, "#{pane_id}"])
+                .is_some_and(|out| out.trim() == pane)
     }
 
     fn run(&self, pane: &str, command: &str) -> bool {
@@ -220,35 +214,73 @@ impl Mux for Tmux {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn major_version_reads_the_leading_number() {
+        assert_eq!(parse_major_version("tmux 3.4\n"), Some(3));
+        assert_eq!(parse_major_version("tmux 2.9a"), Some(2));
+        assert_eq!(parse_major_version("tmux next-3.5"), Some(3));
+        assert_eq!(parse_major_version("tmux 10.0"), Some(10));
+    }
+
+    #[test]
+    fn major_version_is_none_without_digits() {
+        assert_eq!(parse_major_version("tmux master"), None);
+        assert_eq!(parse_major_version(""), None);
+    }
+
+    #[test]
+    fn env_args_pass_the_crew_dir_and_role() {
+        let expected: Vec<String> =
+            ["-e", "CREW_DIR=/r/.crew", "-e", "CREW_ROLE=human"].iter().map(|w| (*w).to_string()).collect();
+        assert_eq!(env_args(Path::new("/r/.crew"), "human"), expected);
+    }
+
+    #[test]
+    fn split_args_use_h_for_right_and_v_for_down() {
+        let right = split_args("%1", Direction::Right, Path::new("/w"), Path::new("/c"), "b");
+        let down = split_args("%1", Direction::Down, Path::new("/w"), Path::new("/c"), "b");
+        assert_eq!(right[..6], ["split-window", "-d", "-t", "%1", "-h", "-c"].map(String::from)[..]);
+        assert_eq!(down[4], "-v");
+    }
+
+    #[test]
+    fn split_args_set_the_cwd_env_and_print_the_new_pane_id() {
+        let args = split_args("%1", Direction::Down, Path::new("/w/b"), Path::new("/r/.crew"), "builder");
+        assert_eq!(args[6], "/w/b");
+        assert_eq!(args[7..11], ["-e", "CREW_DIR=/r/.crew", "-e", "CREW_ROLE=builder"].map(String::from)[..]);
+        assert_eq!(args[11..], ["-P", "-F", "#{pane_id}"].map(String::from)[..]);
+    }
     use crate::commands::testing::{ctx_in, scratch_dir};
     use crate::util::testing::Fake;
 
     fn ctx() -> Ctx {
         let root = scratch_dir().join("my app");
         std::fs::create_dir_all(&root).unwrap();
-        ctx_in(
+        let mut ctx = ctx_in(
             &root,
             Some("multiplexer = \"tmux\"\npaste_delay = 0\n[roles.lead]\nworktree = false\n[roles.builder]\nworktree = false\n"),
-        )
+        );
+        ctx.key = "my-app".to_string();
+        ctx
     }
 
-    fn words(text: &str) -> Vec<String> {
+    fn split_words(text: &str) -> Vec<String> {
         text.split(' ').map(String::from).collect()
     }
 
-    // A tmux whose answers depend on the subcommand; each line is "<match> => <shell>".
     fn tmux(fake: &Fake, body: &str) {
         fake.program("tmux", body);
     }
 
     #[test]
     fn major_version_is_read_from_the_version_banner() {
-        assert_eq!(parse_major("tmux 3.4\n"), Some(3));
-        assert_eq!(parse_major("tmux 2.9a"), Some(2));
-        assert_eq!(parse_major("tmux next-3.5"), Some(3));
-        assert_eq!(parse_major("tmux 10.0"), Some(10));
-        assert_eq!(parse_major("tmux master"), None);
-        assert_eq!(parse_major(""), None);
+        assert_eq!(parse_major_version("tmux 3.4\n"), Some(3));
+        assert_eq!(parse_major_version("tmux 2.9a"), Some(2));
+        assert_eq!(parse_major_version("tmux next-3.5"), Some(3));
+        assert_eq!(parse_major_version("tmux 10.0"), Some(10));
+        assert_eq!(parse_major_version("tmux master"), None);
+        assert_eq!(parse_major_version(""), None);
     }
 
     #[test]
@@ -270,14 +302,14 @@ mod tests {
     #[test]
     fn the_session_is_named_after_the_repo_and_matched_exactly() {
         let ctx = ctx();
-        assert_eq!(session(&ctx), "crew-my-app");
-        assert_eq!(exact(&ctx), "=crew-my-app");
+        assert_eq!(session(&ctx), format!("crew-{}", ctx.key));
+        assert_eq!(exact(&ctx), format!("=crew-{}", ctx.key));
     }
 
     #[test]
     fn new_panes_get_the_crew_environment() {
         let ctx = ctx();
-        let args = env_args(&ctx, "builder");
+        let args = env_args(&ctx.crew, "builder");
         assert_eq!(args[0], "-e");
         assert_eq!(args[1], format!("CREW_DIR={}", ctx.crew.display()));
         assert_eq!(args[2], "-e");
@@ -395,12 +427,16 @@ mod tests {
     }
 
     #[test]
-    fn pane_exists_asks_tmux_except_for_an_empty_id() {
+    fn pane_exists_needs_tmux_to_echo_the_pane_id_back() {
         let fake = Fake::new();
-        tmux(&fake, "exit 0");
+        tmux(&fake, "echo %1");
         assert!(!Tmux.pane_exists(""));
         assert!(fake.log("tmux").is_empty());
         assert!(Tmux.pane_exists("%1"));
+        assert_eq!(fake.log("tmux"), ["display-message -p -t %1 #{pane_id}"]);
+        assert!(!Tmux.pane_exists("%2"), "a different id back means another pane");
+        tmux(&fake, "exit 0");
+        assert!(!Tmux.pane_exists("%1"), "exit 0 with no output is how tmux reports a gone pane");
         tmux(&fake, "exit 1");
         assert!(!Tmux.pane_exists("%1"));
     }
@@ -426,7 +462,7 @@ mod tests {
         let ctx = ctx();
         let fake = Fake::new();
         tmux(&fake, "exit 0");
-        assert!(Tmux.start_agent(&ctx, "lead", "%1", &words("claude --add-dir /x")));
+        assert!(Tmux.start_agent(&ctx, "lead", "%1", &split_words("claude --add-dir /x")));
         assert_eq!(fake.log("tmux")[0], "send-keys -t %1 -l -- claude --add-dir /x");
         let spaced = vec!["codex".to_string(), "a b".to_string()];
         Tmux.start_agent(&ctx, "lead", "%1", &spaced);
@@ -438,12 +474,12 @@ mod tests {
         let ctx = ctx();
         let fake = Fake::new();
         tmux(&fake, "exit 1");
-        assert!(!Tmux.start_agent(&ctx, "lead", "%1", &words("claude")));
+        assert!(!Tmux.start_agent(&ctx, "lead", "%1", &split_words("claude")));
     }
 
     fn fake_pane(fake: &Fake, ps_parents: &str, pane_ok: bool) {
-        let alive = if pane_ok { "" } else { "exit 1" };
-        tmux(fake, &format!("case \"$*\" in *pane_pid*) echo 4242;; *pane_id*) {alive};; esac"));
+        let pane_id = if pane_ok { "echo %1" } else { "true" };
+        tmux(fake, &format!("case \"$*\" in *pane_pid*) echo 4242;; *pane_id*) {pane_id};; esac"));
         fake.program("ps", &format!("printf '%s\\n' {ps_parents}"));
     }
 

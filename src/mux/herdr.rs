@@ -11,8 +11,32 @@ fn json_field(output: &str, pointer: &str) -> Option<String> {
     let value: serde_json::Value = serde_json::from_str(output.trim()).ok()?;
     value.pointer(pointer)?.as_str().map(String::from)
 }
-fn env_args(ctx: &Ctx, role: &str) -> Vec<String> {
-    vec!["--env".into(), format!("CREW_DIR={}", ctx.crew.display()), "--env".into(), format!("CREW_ROLE={role}")]
+fn env_args(crew: &Path, role: &str) -> Vec<String> {
+    vec!["--env".into(), format!("CREW_DIR={}", crew.display()), "--env".into(), format!("CREW_ROLE={role}")]
+}
+fn split_args(from: &str, direction: Direction, keep: f32, dir: &Path, crew: &Path, role: &str) -> Vec<String> {
+    let direction = if direction == Direction::Right { "right" } else { "down" };
+    let mut args = vec![
+        "pane".to_string(),
+        "split".into(),
+        from.into(),
+        "--direction".into(),
+        direction.into(),
+        "--ratio".into(),
+        format!("{keep:.3}"),
+        "--cwd".into(),
+        dir.display().to_string(),
+    ];
+    args.extend(env_args(crew, role));
+    args.push("--no-focus".into());
+    args
+}
+fn agent_start_args(name: &str, kind: &str, pane: &str, words: &[String]) -> Vec<String> {
+    let mut args =
+        ["agent", "start", name, "--kind", kind, "--pane", pane, "--timeout", "25000", "--"].map(String::from).to_vec();
+    // herdr runs its own executable for a known kind, so only the arguments are passed.
+    args.extend(words.iter().skip(1).cloned());
+    args
 }
 
 impl Mux for Herdr {
@@ -50,9 +74,9 @@ impl Mux for Herdr {
 
     fn create_workspace(&self, ctx: &Ctx, role: &str) -> Result<()> {
         let dir = ctx.role_dir(role).display().to_string();
-        let label = format!("crew:{}", ctx.slug);
+        let label = format!("crew:{}", ctx.key);
         let mut args = vec!["workspace".to_string(), "create".into(), "--cwd".into(), dir, "--label".into(), label];
-        args.extend(env_args(ctx, role));
+        args.extend(env_args(&ctx.crew, role));
         args.push("--no-focus".into());
         let (_, out) = run_all("herdr", &args);
         let (Some(ws), Some(pane)) =
@@ -65,25 +89,12 @@ impl Mux for Herdr {
         }
         ctx.state.set("ws", &ws);
         ctx.state.set(&format!("pane:{role}"), &pane);
-        ui::ok(format!("herdr workspace crew:{} ({ws})", ctx.slug));
+        ui::ok(format!("herdr workspace crew:{} ({ws})", ctx.key));
         Ok(())
     }
 
     fn split(&self, ctx: &Ctx, role: &str, from: &str, direction: Direction, keep: f32) -> Option<String> {
-        let direction = if direction == Direction::Right { "right" } else { "down" };
-        let mut args = vec![
-            "pane".to_string(),
-            "split".into(),
-            from.into(),
-            "--direction".into(),
-            direction.into(),
-            "--ratio".into(),
-            format!("{keep:.3}"),
-            "--cwd".into(),
-            ctx.role_dir(role).display().to_string(),
-        ];
-        args.extend(env_args(ctx, role));
-        args.push("--no-focus".into());
+        let args = split_args(from, direction, keep, &ctx.role_dir(role), &ctx.crew, role);
         let (success, out) = run_all("herdr", &args);
         if !success {
             ui::warn(format!("split failed: {}", out.trim()));
@@ -104,7 +115,7 @@ impl Mux for Herdr {
             label.into(),
         ];
         if let Some(role) = role {
-            args.extend(env_args(ctx, role));
+            args.extend(env_args(&ctx.crew, role));
         }
         args.push("--no-focus".into());
         let (_, out) = run_all("herdr", &args);
@@ -129,20 +140,7 @@ impl Mux for Herdr {
             }
             return launched;
         };
-        // herdr runs its own executable for a known kind, so only the arguments are passed.
-        let mut args = vec![
-            "agent".to_string(),
-            "start".into(),
-            ctx.agent_name(role),
-            "--kind".into(),
-            kind.clone(),
-            "--pane".into(),
-            pane.into(),
-            "--timeout".into(),
-            "25000".into(),
-            "--".into(),
-        ];
-        args.extend(words.iter().skip(1).cloned());
+        let args = agent_start_args(&ctx.agent_name(role), &kind, pane, words);
         let mut last = String::new();
         for _ in 0..4 {
             let (success, out) = run_all("herdr", &args);
@@ -211,7 +209,7 @@ impl Mux for Herdr {
             run_ok("herdr", &["workspace", "focus", &ws]);
         }
         if std::env::var("HERDR_ENV").as_deref() == Ok("1") {
-            ui::info(format!("already inside herdr, switched to crew:{}", ctx.slug));
+            ui::info(format!("already inside herdr, switched to crew:{}", ctx.key));
             return Ok(());
         }
         let err = std::process::Command::new("herdr").exec();
@@ -222,26 +220,116 @@ impl Mux for Herdr {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn words(items: &[&str]) -> Vec<String> {
+        items.iter().map(|w| (*w).to_string()).collect()
+    }
+
+    #[test]
+    fn json_field_reads_a_nested_string() {
+        let out = "{\"result\":{\"pane\":{\"pane_id\":\"p_7\"}}}\n";
+        assert_eq!(json_field(out, "/result/pane/pane_id").as_deref(), Some("p_7"));
+    }
+
+    #[test]
+    fn json_field_is_none_for_bad_input() {
+        assert_eq!(json_field("not json", "/a"), None);
+        assert_eq!(json_field("", "/a"), None);
+        assert_eq!(json_field("{\"a\":{}}", "/a/b"), None);
+        assert_eq!(json_field("{\"a\":5}", "/a"), None);
+    }
+
+    #[test]
+    fn env_args_pass_the_crew_dir_and_role() {
+        assert_eq!(
+            env_args(Path::new("/r/.crew"), "human"),
+            words(&["--env", "CREW_DIR=/r/.crew", "--env", "CREW_ROLE=human"])
+        );
+    }
+
+    #[test]
+    fn split_args_put_the_ratio_and_cwd_before_the_env() {
+        let args = split_args("p1", Direction::Right, 1.0 / 3.0, Path::new("/w/b"), Path::new("/r/.crew"), "builder");
+        assert_eq!(
+            args,
+            words(&[
+                "pane",
+                "split",
+                "p1",
+                "--direction",
+                "right",
+                "--ratio",
+                "0.333",
+                "--cwd",
+                "/w/b",
+                "--env",
+                "CREW_DIR=/r/.crew",
+                "--env",
+                "CREW_ROLE=builder",
+                "--no-focus",
+            ])
+        );
+    }
+
+    #[test]
+    fn split_args_down_direction() {
+        let args = split_args("p1", Direction::Down, 0.5, Path::new("/w"), Path::new("/c"), "x");
+        assert_eq!(args[3..7], words(&["--direction", "down", "--ratio", "0.500"])[..]);
+    }
+
+    #[test]
+    fn agent_start_forwards_only_arguments_after_a_delimiter() {
+        let args =
+            agent_start_args("app-lead", "claude", "p2", &words(&["claude", "--add-dir", "/c", "--", "kickoff"]));
+        assert_eq!(
+            args,
+            words(&[
+                "agent",
+                "start",
+                "app-lead",
+                "--kind",
+                "claude",
+                "--pane",
+                "p2",
+                "--timeout",
+                "25000",
+                "--",
+                "--add-dir",
+                "/c",
+                "--",
+                "kickoff",
+            ])
+        );
+    }
+
+    #[test]
+    fn agent_start_with_no_arguments_ends_at_the_delimiter() {
+        let args = agent_start_args("n", "codex", "p", &words(&["codex"]));
+        assert_eq!(args.last().map(String::as_str), Some("--"));
+        assert!(agent_start_args("n", "codex", "p", &[]).ends_with(&words(&["--"])));
+    }
     use crate::commands::testing::{ctx_in, scratch_dir};
     use crate::util::testing::Fake;
 
     fn ctx() -> Ctx {
         let root = scratch_dir().join("my app");
         std::fs::create_dir_all(&root).unwrap();
-        ctx_in(
+        let mut ctx = ctx_in(
             &root,
             Some(
                 "multiplexer = \"herdr\"\n[agents.shellish]\nkind = \"\"\n[roles.lead]\nagent = \"claude\"\nworktree = false\n\
                  [roles.builder]\nagent = \"codex\"\nworktree = false\n[roles.typed]\nagent = \"shellish\"\nworktree = false\n",
             ),
-        )
+        );
+        ctx.key = "my-app".to_string();
+        ctx
     }
 
     fn herdr(fake: &Fake, body: &str) {
         fake.program("herdr", body);
     }
 
-    fn words(text: &str) -> Vec<String> {
+    fn split_words(text: &str) -> Vec<String> {
         text.split(' ').map(String::from).collect()
     }
 
@@ -261,7 +349,7 @@ mod tests {
     fn new_panes_get_the_crew_environment() {
         let ctx = ctx();
         assert_eq!(
-            env_args(&ctx, "lead"),
+            env_args(&ctx.crew, "lead"),
             ["--env".to_string(), format!("CREW_DIR={}", ctx.crew.display()), "--env".into(), "CREW_ROLE=lead".into()]
         );
     }
@@ -434,7 +522,7 @@ mod tests {
         let ctx = ctx();
         let fake = Fake::new();
         herdr(&fake, "exit 0");
-        assert!(Herdr.start_agent(&ctx, "builder", "w1:p2", &words("codex --add-dir /x kickoff")));
+        assert!(Herdr.start_agent(&ctx, "builder", "w1:p2", &split_words("codex --add-dir /x kickoff")));
         assert_eq!(
             fake.log("herdr"),
             ["agent start my-app-builder --kind codex --pane w1:p2 --timeout 25000 -- --add-dir /x kickoff"]
@@ -446,9 +534,9 @@ mod tests {
         let ctx = ctx();
         let fake = Fake::new();
         herdr(&fake, "echo 'error: agent_not_ready' >&2; exit 1");
-        assert!(Herdr.start_agent(&ctx, "builder", "p", &words("codex x")));
+        assert!(Herdr.start_agent(&ctx, "builder", "p", &split_words("codex x")));
         herdr(&fake, "echo 'timeout waiting' >&2; exit 1");
-        assert!(Herdr.start_agent(&ctx, "builder", "p", &words("codex x")));
+        assert!(Herdr.start_agent(&ctx, "builder", "p", &split_words("codex x")));
         assert_eq!(fake.log("herdr").len(), 2, "neither case is retried");
     }
 
@@ -457,7 +545,7 @@ mod tests {
         let ctx = ctx();
         let fake = Fake::new();
         herdr(&fake, "echo 'boom' >&2; exit 1");
-        assert!(!Herdr.start_agent(&ctx, "builder", "p", &words("codex x")));
+        assert!(!Herdr.start_agent(&ctx, "builder", "p", &split_words("codex x")));
         assert_eq!(fake.log("herdr").len(), 4);
     }
 

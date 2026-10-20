@@ -58,6 +58,8 @@ pub fn has_unanswered_message(board: &str, role: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::has_unanswered_message;
+    use super::*;
+    use crate::crew::testutil::{fixture, ROLES};
 
     const BOARD: &str = "# Crew board\n\n\
         ### 2026-10-20 03:00  crew → all\nCrew started\n\n\
@@ -75,5 +77,71 @@ mod tests {
     #[test]
     fn crew_messages_are_not_owed() {
         assert!(!has_unanswered_message("### 2026-10-20 03:00  crew → lead\nalert\n", "lead"));
+    }
+
+    #[test]
+    fn posts_append_with_a_header_per_message() {
+        let f = fixture(ROLES);
+        post(&f.ctx, "lead", "builder", "first").unwrap();
+        post(&f.ctx, "builder", "lead", "second").unwrap();
+        let board = f.board();
+        let headers: Vec<&str> = board.lines().filter(|l| l.starts_with("### ")).collect();
+        assert_eq!(headers.len(), 2);
+        assert!(headers[0].ends_with("  lead → builder"));
+        assert!(headers[1].ends_with("  builder → lead"));
+        assert!(board.contains("\nfirst\n\n"));
+        assert!(board.find("first").unwrap() < board.find("second").unwrap());
+    }
+
+    #[test]
+    fn posted_messages_are_read_back_as_owed() {
+        let f = fixture(ROLES);
+        post(&f.ctx, "lead", "builder", "do it").unwrap();
+        assert!(has_unanswered_message(&f.board(), "builder"));
+        post(&f.ctx, "builder", "lead", "done").unwrap();
+        assert!(!has_unanswered_message(&f.board(), "builder"));
+        assert!(has_unanswered_message(&f.board(), "lead"));
+    }
+
+    #[test]
+    fn message_text_tells_the_recipient_how_to_reply() {
+        let f = fixture(ROLES);
+        assert_eq!(message_text(&f.ctx, "lead", "hi"), "[crew] from lead: hi  (reply with: crew say lead \"...\")");
+    }
+
+    #[test]
+    fn messages_from_the_human_have_no_reply_hint() {
+        let f = fixture(ROLES);
+        assert_eq!(message_text(&f.ctx, "human", "hi"), "[crew] from the human: hi");
+    }
+
+    #[test]
+    fn long_messages_are_cut_with_a_pointer_to_the_board() {
+        let f = fixture(ROLES);
+        let text = message_text(&f.ctx, "lead", &"é".repeat(601));
+        assert!(text.contains(&"é".repeat(600)));
+        assert!(!text.contains(&"é".repeat(601)));
+        assert!(text.contains(&format!("full message in {}", f.ctx.file("board.md").display())));
+        assert!(!message_text(&f.ctx, "lead", &"x".repeat(600)).contains("full message"));
+    }
+
+    #[test]
+    fn all_goes_to_everyone_but_the_sender() {
+        let f = fixture(ROLES);
+        assert_eq!(recipients(&f.ctx, "all", "builder"), ["lead", "reviewer"]);
+        assert_eq!(recipients(&f.ctx, "all", "human"), ["lead", "builder", "reviewer"]);
+    }
+
+    #[test]
+    fn a_named_recipient_is_used_as_given() {
+        let f = fixture(ROLES);
+        assert_eq!(recipients(&f.ctx, "reviewer", "lead"), ["reviewer"]);
+    }
+
+    #[test]
+    fn unparsable_headers_are_ignored() {
+        let board = "### no route here\n### 2026-10-20 03:00  lead builder\n### 2026-10-20 03:01  lead → builder\n";
+        assert!(has_unanswered_message(board, "builder"));
+        assert!(!has_unanswered_message("", "builder"));
     }
 }

@@ -158,10 +158,10 @@ mod tests {
         let fake = Fake::new();
         fake.program("tmux", "case \"$1\" in has-session) exit 1;; esac");
         stop(&ctx).unwrap();
-        assert_eq!(fake.log("tmux"), ["has-session -t =crew-".to_string() + &ctx.slug]);
+        assert_eq!(fake.log("tmux"), ["has-session -t =crew-".to_string() + &ctx.key]);
         fake.program("tmux", "exit 0");
         stop(&ctx).unwrap();
-        assert!(fake.log("tmux").iter().any(|l| l == &format!("kill-session -t =crew-{}", ctx.slug)));
+        assert!(fake.log("tmux").iter().any(|l| l == &format!("kill-session -t =crew-{}", ctx.key)));
     }
 
     #[test]

@@ -20,7 +20,8 @@ paste_delay = 0.3
 stall_timeout = 600
 
 # How many agents share a tab. The first fills the left half and the rest split the right
-# half evenly; any more agents go on extra tabs ("agents 2", ...).
+# half evenly; any more agents go on extra tabs ("agents 2", ...). The first tab also
+# gets a plain terminal for you, at the bottom of the right column (not counted here).
 panes_per_tab = 4
 
 # How often, in seconds, crew checks for stalled agents.
@@ -35,7 +36,7 @@ watch_interval = 30
 # type your exact command instead, e.g. for a wrapper script or a custom CLI.
 
 [agents.claude]
-command = "claude --add-dir {crew}"
+command = "claude --add-dir {crew} --"
 
 [agents.codex]
 command = "codex --sandbox workspace-write --add-dir {crew}"   # read-only would refuse --add-dir

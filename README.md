@@ -7,10 +7,12 @@ Start a team of AI coding agents in any repo with one command. Each agent gets a
 ```
 ┌──────────────┬──────────────┐
 │              │   builder    │
-│     lead     │   (codex)    │
-│   (claude)   ├──────────────┤
-│              │   reviewer   │
+│              │   (codex)    │
+│     lead     ├──────────────┤
+│   (claude)   │   reviewer   │
 │              │   (gemini)   │
+│              ├──────────────┤
+│              │   terminal   │
 └──────────────┴──────────────┘
   tabs: agents | board
 ```
@@ -56,7 +58,7 @@ crew teardown                            stop and remove clean worktrees
 multiplexer = "tmux"                  # or "herdr"
 
 [agents.claude]
-command = "claude --add-dir {crew}"   # how to launch an agent
+command = "claude --add-dir {crew} --"   # how to launch an agent
 
 [roles.reviewer]
 agent = "claude"

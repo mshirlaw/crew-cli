@@ -43,5 +43,5 @@ pub fn ctx_in(root: &Path, config: Option<&str>) -> Ctx {
     let config = Config::load(Some(crew.join("config.toml"))).unwrap();
     let mux = mux::make(config.multiplexer().unwrap());
     let slug = crate::crew::context::slugify(&root.file_name().unwrap().to_string_lossy());
-    Ctx { state: State::new(crew.join("state")), root: root.to_path_buf(), crew, slug, config, mux }
+    Ctx { state: State::new(crew.join("state")), root: root.to_path_buf(), crew, key: slug.clone(), slug, config, mux }
 }
