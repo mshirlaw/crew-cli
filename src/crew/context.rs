@@ -23,18 +23,7 @@ impl Ctx {
     pub fn load() -> Result<Ctx> {
         let discovered_root = repo_root();
         let env_crew = std::env::var_os("CREW_DIR").map(PathBuf::from).filter(|d| d.is_dir());
-        let (root, crew) = match (discovered_root, env_crew) {
-            (Some(root), Some(crew)) if crew.parent().is_some_and(|parent| parent == root) => (root, crew),
-            (Some(_), Some(crew)) => {
-                return Err(anyhow!(
-                    "CREW_DIR points to {}, which is not part of the current repository",
-                    crew.display()
-                ));
-            }
-            (Some(root), None) => (root.clone(), root.join(".crew")),
-            (None, Some(crew)) => (crew.parent().map(Path::to_path_buf).unwrap_or_default(), crew),
-            (None, None) => return Err(anyhow!("not inside a git repository")),
-        };
+        let (root, crew) = resolve_paths(discovered_root, env_crew)?;
         let config = Config::load(Some(crew.join("config.toml")))?;
         let mux = mux::make(config.multiplexer()?);
         let slug = slugify(&root.file_name().unwrap_or_default().to_string_lossy());
@@ -90,6 +79,15 @@ impl Ctx {
     }
 }
 
+fn resolve_paths(discovered_root: Option<PathBuf>, env_crew: Option<PathBuf>) -> Result<(PathBuf, PathBuf)> {
+    match (discovered_root, env_crew) {
+        (Some(root), Some(crew)) if crew.parent().is_some_and(|parent| parent == root) => Ok((root, crew)),
+        (Some(root), Some(_) | None) => Ok((root.clone(), root.join(".crew"))),
+        (None, Some(crew)) => Ok((crew.parent().map(Path::to_path_buf).unwrap_or_default(), crew)),
+        (None, None) => Err(anyhow!("not inside a git repository")),
+    }
+}
+
 // The main checkout's root, even when run from a worktree.
 pub fn repo_root() -> Option<PathBuf> {
     let out = util::run_out("git", &["rev-parse", "--git-common-dir"])?;
@@ -114,8 +112,8 @@ fn crew_key(root: &Path, slug: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{crew_key, slugify};
-    use std::path::Path;
+    use super::{crew_key, resolve_paths, slugify};
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn slugs_are_short_and_safe() {
@@ -128,5 +126,19 @@ mod tests {
     #[test]
     fn keys_distinguish_crew_directories() {
         assert_ne!(crew_key(Path::new("/repo/.crew-a"), "api"), crew_key(Path::new("/repo/.crew-b"), "api"));
+    }
+
+    #[test]
+    fn stale_crew_dir_falls_back_to_current_repository() {
+        let root = PathBuf::from("/current-repo");
+        let paths = resolve_paths(Some(root.clone()), Some(PathBuf::from("/other-repo/.crew"))).unwrap();
+        assert_eq!(paths, (root.clone(), root.join(".crew")));
+    }
+
+    #[test]
+    fn crew_dir_is_used_from_a_worktree() {
+        let root = PathBuf::from("/current-repo");
+        let crew = root.join(".crew");
+        assert_eq!(resolve_paths(Some(root.clone()), Some(crew.clone())).unwrap(), (root, crew));
     }
 }
