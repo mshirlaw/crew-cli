@@ -152,6 +152,13 @@ check "bad multiplexer is rejected"          sh -c "cd '$R3' && ! $CREW_RUN role
 check "bad multiplexer error is clear"       sh -c "cd '$R3' && $CREW_RUN role list 2>&1 | grep -q 'must be \"herdr\" or \"tmux\"'"
 check "sample config matches crew config example" sh -c "$CREW_RUN config example | diff -q - '$SOURCE_DIR/config.example.toml'"
 check "doctor runs outside a repo"           sh -c "cd '$WORK' && $CREW_RUN doctor >/dev/null 2>&1; true"
+check "version prints the version"            output_has "crew $(sed -n 's/^version = "\(.*\)"/\1/p' "$SOURCE_DIR/Cargo.toml" | head -1)" crew version
+check "commands fail outside a repo"         sh -c "cd '$WORK' && ! $CREW_RUN tasks 2>/dev/null"
+check "outside a repo the error says so"     sh -c "cd '$WORK' && $CREW_RUN tasks 2>&1 | grep -q 'not inside a git repository'"
+check "commands before setup point to setup" sh -c "cd '$(new_repo no-setup)' && $CREW_RUN status 2>&1 | grep -q 'crew setup'"
+check "setup twice keeps the crew"           output_has "already set up" crew setup
+check "config lists the roles"               output_has ".crew/roles/builder.md" crew config
+check "unknown commands are rejected"        sh -c "! $CREW_RUN frobnicate 2>/dev/null"
 
 # ------------------------------------------------------------ roles
 
@@ -161,6 +168,10 @@ check "role add writes the config"           file_has .crew/config.toml "[roles.
 check "role add makes a role file"           test -f .crew/roles/tester.md
 check "role add rejects bad names"           sh -c "! $CREW_RUN role add Bad_Name"
 check "role add rejects duplicates"          sh -c "! $CREW_RUN role add tester"
+check "role show prints the instructions"    output_has "# Role: builder" crew role show builder
+check "role show rejects unknown roles"      sh -c "! $CREW_RUN role show nobody"
+check "role set rejects unknown settings"    sh -c "! $CREW_RUN role set tester colour=red"
+check "role save of an unknown role fails"   sh -c "! $CREW_RUN role save nobody"
 check "role set changes the agent"           crew role set tester agent=gemini worktree=yes
 check "role set result"                      output_has "tester     gemini   yes" crew role
 check "role add --like copies instructions"  crew role add docs --like reviewer
@@ -188,8 +199,12 @@ check "backslashes in notes survive"         file_has .crew/tasks.md 'C:\new fol
 check "bad status is rejected"               sh -c "! $CREW_RUN task set 1 status=finished"
 check "unknown task is rejected"             sh -c "! $CREW_RUN task done 99"
 check "unknown owner is rejected"            sh -c "! $CREW_RUN task add x --owner nobody"
+check "blank titles are rejected"            sh -c "! $CREW_RUN task add ' '"
+check "unknown task fields are rejected"     sh -c "! $CREW_RUN task set 1 title=x"
+check "the human can own a task"             crew task add "Decide the name" --owner human
+check "tasks lists them"                     output_has "Decide the name" crew tasks
 for i in $(seq 1 20); do crew task add "parallel $i" >/dev/null 2>&1 & done; wait
-check "20 parallel adds keep every task"     test "$(wc -l < .crew/tasks.tsv | tr -d ' ')" -eq 22
+check "20 parallel adds keep every task"     test "$(wc -l < .crew/tasks.tsv | tr -d ' ')" -eq 23
 check "20 parallel adds give unique ids"     test -z "$(cut -f1 .crew/tasks.tsv | sort | uniq -d)"
 
 # ------------------------------------------------------------ messaging without a session
@@ -200,6 +215,10 @@ check "board has the message"                file_has .crew/board.md "hello buil
 check "say records the sender"               sh -c "CREW_ROLE=builder $CREW_RUN say reviewer ready && grep -q 'builder → reviewer' .crew/board.md"
 check "say rejects unknown roles"            sh -c "! $CREW_RUN say nobody hi"
 check "board shows recent lines"             output_has "hello builder" crew board 20
+check "say to the human is posted"           output_has "posted for the human" crew say human "need a decision"
+check "say keeps words that look like flags" sh -c "$CREW_RUN say builder --fix now && grep -q -- '--fix now' .crew/board.md"
+check "say needs a message"                  sh -c "! $CREW_RUN say builder 2>/dev/null"
+check "board shows only the last lines"      sh -c "$CREW_RUN board 2 | grep -qF -- '--fix now' && ! $CREW_RUN board 2 | grep -q 'hello builder'"
 
 # ------------------------------------------------------------ herdr (fake)
 

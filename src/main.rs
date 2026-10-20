@@ -78,3 +78,20 @@ fn run(cli: Cli) -> Result<bool> {
     }
     Ok(true)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run_args(args: &[&str]) -> Result<bool> {
+        let mut full = vec!["crew"];
+        full.extend_from_slice(args);
+        run(Cli::try_parse_from(full).unwrap())
+    }
+
+    #[test]
+    fn version_and_the_example_config_work_anywhere() {
+        assert!(run_args(&["version"]).unwrap());
+        assert!(run_args(&["config", "example"]).unwrap());
+    }
+}

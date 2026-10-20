@@ -109,7 +109,9 @@ fn nesting_conflict(mux: &str, in_tmux: bool, in_herdr: bool) -> Option<&'static
 
 #[cfg(test)]
 mod tests {
-    use super::nesting_conflict;
+    use super::*;
+    use crate::commands::testing::{crew_ctx, ctx_in, scratch_dir};
+    use crate::util::testing::Fake;
 
     #[test]
     fn only_the_other_multiplexer_conflicts() {
@@ -119,5 +121,52 @@ mod tests {
         assert_eq!(nesting_conflict("herdr", false, true), None);
         assert_eq!(nesting_conflict("herdr", false, false), None);
         assert_eq!(nesting_conflict("herdr", true, true), Some("tmux"));
+    }
+
+    #[test]
+    fn restart_rejects_unknown_roles_before_touching_anything() {
+        let mut ctx = crew_ctx();
+        assert!(restart(&mut ctx, "ghost").unwrap_err().to_string().contains("no role 'ghost'"));
+    }
+
+    #[test]
+    fn restart_needs_a_crew() {
+        let mut ctx = ctx_in(&scratch_dir(), None);
+        assert!(restart(&mut ctx, "all").unwrap_err().to_string().contains("crew setup"));
+    }
+
+    #[test]
+    fn stop_needs_a_crew() {
+        let ctx = ctx_in(&scratch_dir(), None);
+        assert!(stop(&ctx).unwrap_err().to_string().contains("crew setup"));
+        assert!(teardown(&ctx, true).unwrap_err().to_string().contains("crew setup"));
+    }
+
+    #[test]
+    fn stop_forgets_the_saved_session_and_keeps_the_files() {
+        let ctx = crew_ctx();
+        ctx.state.set("workspace", "w1");
+        std::fs::write(ctx.file("board.md"), "kept").unwrap();
+        stop(&ctx).unwrap();
+        assert_eq!(ctx.state.get("workspace"), None);
+        assert_eq!(std::fs::read_to_string(ctx.file("board.md")).unwrap(), "kept");
+    }
+
+    #[test]
+    fn stop_closes_the_session_only_when_there_is_one() {
+        let ctx = crew_ctx();
+        let fake = Fake::new();
+        fake.program("tmux", "case \"$1\" in has-session) exit 1;; esac");
+        stop(&ctx).unwrap();
+        assert_eq!(fake.log("tmux"), ["has-session -t =crew-".to_string() + &ctx.key]);
+        fake.program("tmux", "exit 0");
+        stop(&ctx).unwrap();
+        assert!(fake.log("tmux").iter().any(|l| l == &format!("kill-session -t =crew-{}", ctx.key)));
+    }
+
+    #[test]
+    fn teardown_of_a_crew_without_worktrees_succeeds() {
+        let ctx = crew_ctx();
+        teardown(&ctx, true).unwrap();
     }
 }

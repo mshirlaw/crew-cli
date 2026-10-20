@@ -35,3 +35,18 @@ pub fn bold(text: &str) -> String {
 pub fn dim(text: &str) -> String {
     paint("2", text, stdout_is_terminal())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::paint;
+
+    #[test]
+    fn terminals_get_colour_codes() {
+        assert_eq!(paint("1", "hi", true), "\x1b[1mhi\x1b[0m");
+    }
+
+    #[test]
+    fn pipes_get_plain_text() {
+        assert_eq!(paint("1", "hi", false), "hi");
+    }
+}
