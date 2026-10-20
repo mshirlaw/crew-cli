@@ -129,6 +129,11 @@ mod tests {
     }
 
     #[test]
+    fn keys_distinguish_same_named_repositories() {
+        assert_ne!(crew_key(Path::new("/one/api/.crew"), "api"), crew_key(Path::new("/two/api/.crew"), "api"));
+    }
+
+    #[test]
     fn stale_crew_dir_falls_back_to_current_repository() {
         let root = PathBuf::from("/current-repo");
         let paths = resolve_paths(Some(root.clone()), Some(PathBuf::from("/other-repo/.crew"))).unwrap();
