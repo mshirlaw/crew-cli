@@ -111,6 +111,7 @@ fn nesting_conflict(mux: &str, in_tmux: bool, in_herdr: bool) -> Option<&'static
 mod tests {
     use super::*;
     use crate::commands::testing::{crew_ctx, ctx_in, scratch_dir};
+    use crate::util::testing::Fake;
 
     #[test]
     fn only_the_other_multiplexer_conflicts() {
@@ -152,10 +153,15 @@ mod tests {
     }
 
     #[test]
-    fn stopping_twice_is_fine() {
+    fn stop_closes_the_session_only_when_there_is_one() {
         let ctx = crew_ctx();
+        let fake = Fake::new();
+        fake.program("tmux", "case \"$1\" in has-session) exit 1;; esac");
         stop(&ctx).unwrap();
+        assert_eq!(fake.log("tmux"), ["has-session -t =crew-".to_string() + &ctx.slug]);
+        fake.program("tmux", "exit 0");
         stop(&ctx).unwrap();
+        assert!(fake.log("tmux").iter().any(|l| l == &format!("kill-session -t =crew-{}", ctx.slug)));
     }
 
     #[test]

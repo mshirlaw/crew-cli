@@ -3,15 +3,21 @@ use crate::crew::context::Ctx;
 use crate::crew::{panes, protocol, templates};
 use crate::util::{self, ui};
 use anyhow::{bail, Result};
+use std::fmt::Write;
 
 pub fn list(ctx: &Ctx) -> Result<()> {
+    print!("{}", list_text(ctx)?);
+    Ok(())
+}
+
+pub(super) fn list_text(ctx: &Ctx) -> Result<String> {
     ctx.require_crew()?;
-    println!("{}", ui::bold(&format!("{:<10} {:<8} {:<9} ROLE FILE", "ROLE", "AGENT", "WORKTREE")));
+    let mut text = format!("{}\n", ui::bold(&format!("{:<10} {:<8} {:<9} ROLE FILE", "ROLE", "AGENT", "WORKTREE")));
     for role in ctx.roles() {
         let worktree = if ctx.config.role_has_worktree(&role) { "yes" } else { "no" };
-        println!("{role:<10} {:<8} {worktree:<9} .crew/roles/{role}.md", ctx.config.role_agent(&role));
+        let _ = writeln!(text, "{role:<10} {:<8} {worktree:<9} .crew/roles/{role}.md", ctx.config.role_agent(&role));
     }
-    Ok(())
+    Ok(text)
 }
 
 pub fn show(ctx: &Ctx, role: &str) -> Result<()> {
@@ -209,11 +215,26 @@ mod tests {
     }
 
     #[test]
-    fn list_and_show_work_and_show_rejects_unknown_roles() {
+    fn list_has_one_row_per_role_with_its_agent_and_worktree() {
         let mut ctx = crew_ctx();
-        list(&ctx).unwrap();
+        add(&mut ctx, "docs", Some("gemini"), false, None).unwrap();
+        let text = list_text(&ctx).unwrap();
+        let rows: Vec<&str> = text.lines().skip(1).collect();
+        assert_eq!(
+            rows,
+            [
+                "lead       claude   no        .crew/roles/lead.md",
+                "builder    codex    yes       .crew/roles/builder.md",
+                "docs       gemini   no        .crew/roles/docs.md",
+            ]
+        );
+        assert!(text.lines().next().unwrap().contains("ROLE FILE"));
+    }
+
+    #[test]
+    fn show_rejects_unknown_roles() {
+        let mut ctx = crew_ctx();
         add(&mut ctx, "docs", Some("codex"), true, None).unwrap();
-        show(&ctx, "docs").unwrap();
         let message = error(show(&ctx, "ghost"));
         assert!(message.contains("no role 'ghost'") && message.contains("lead builder docs"), "{message}");
     }

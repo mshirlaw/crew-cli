@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsStr;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -8,8 +8,8 @@ use std::process::{Command, Stdio};
 use super::testing::resolve;
 
 #[cfg(not(test))]
-fn resolve(program: &str) -> OsString {
-    OsString::from(program)
+fn resolve(program: &str) -> std::ffi::OsString {
+    std::ffi::OsString::from(program)
 }
 
 pub fn has(program: &str) -> bool {

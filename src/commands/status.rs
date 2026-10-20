@@ -4,16 +4,27 @@ use crate::crew::context::{repo_root, Ctx};
 use crate::mux::tmux;
 use crate::util::{self, ui};
 use anyhow::Result;
+use std::fmt::Write;
 
 pub fn status(ctx: &Ctx) -> Result<()> {
+    print!("{}", status_text(ctx)?);
+    Ok(())
+}
+
+fn status_text(ctx: &Ctx) -> Result<String> {
     ctx.require_crew()?;
     let ready = ctx.mux.ready(ctx);
-    println!("{}", ui::bold(&format!("{:<10} {:<8} {:<10} WORKS IN", "ROLE", "AGENT", "STATUS")));
+    let mut text = format!("{}\n", ui::bold(&format!("{:<10} {:<8} {:<10} WORKS IN", "ROLE", "AGENT", "STATUS")));
     for role in ctx.roles() {
         let status = if ready { ctx.mux.agent_status(ctx, &role) } else { "-".to_string() };
-        println!("{role:<10} {:<8} {status:<10} {}", ctx.config.role_agent(&role), util::tilde(&ctx.role_dir(&role)));
+        let _ = writeln!(
+            text,
+            "{role:<10} {:<8} {status:<10} {}",
+            ctx.config.role_agent(&role),
+            util::tilde(&ctx.role_dir(&role))
+        );
     }
-    Ok(())
+    Ok(text)
 }
 
 // Works outside a repo too. Returns false if something required is missing.
@@ -70,10 +81,36 @@ fn agents_to_check(ctx: Option<&Ctx>) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::commands::testing::{crew_ctx, ctx_in, scratch_dir};
+    use crate::util::testing::Fake;
+
+    fn rows(ctx: &Ctx) -> Vec<String> {
+        status_text(ctx).unwrap().lines().skip(1).map(String::from).collect()
+    }
 
     #[test]
-    fn status_lists_roles_even_when_nothing_is_running() {
-        status(&crew_ctx()).unwrap();
+    fn status_shows_a_dash_for_every_agent_when_the_session_is_not_running() {
+        let ctx = crew_ctx();
+        let rows = rows(&ctx);
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].starts_with("lead       claude   -          "), "{}", rows[0]);
+        assert!(rows[0].ends_with(&util::tilde(&ctx.root)), "{}", rows[0]);
+        assert!(rows[1].starts_with("builder    codex    -          "), "{}", rows[1]);
+    }
+
+    #[test]
+    fn status_asks_the_multiplexer_when_the_session_is_up() {
+        let ctx = crew_ctx();
+        let fake = Fake::new();
+        fake.program("tmux", "exit 0");
+        let rows = rows(&ctx);
+        assert!(rows[0].starts_with("lead       claude   stopped    "), "{}", rows[0]);
+        assert!(rows[1].starts_with("builder    codex    stopped    "), "{}", rows[1]);
+    }
+
+    #[test]
+    fn a_role_with_a_worktree_is_shown_in_its_worktree() {
+        let ctx = crew_ctx();
+        assert!(rows(&ctx)[1].ends_with(&util::tilde(&ctx.role_dir("builder"))));
     }
 
     #[test]
